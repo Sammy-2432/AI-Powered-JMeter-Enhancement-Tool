@@ -8,4 +8,3 @@ xmltodict
 backoff
 pytest
 loguru
-OPENAI_API_KEY=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
