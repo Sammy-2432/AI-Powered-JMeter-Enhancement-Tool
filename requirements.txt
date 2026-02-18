@@ -1,0 +1,10 @@
+streamlit
+pandas
+openai
+python-dotenv
+requests
+lxml
+xmltodict
+backoff
+pytest
+loguru
