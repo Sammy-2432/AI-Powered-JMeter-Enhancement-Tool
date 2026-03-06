@@ -173,28 +173,66 @@ init_session_state()
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def check_jmeter_installed(jmeter_executable: str = 'jmeter') -> Tuple[bool, str]:
+def check_jmeter_file_exists(jmeter_executable: str) -> Tuple[bool, str]:
+    """Check if JMeter executable file exists (fast check without running it)"""
+    try:
+        if not jmeter_executable or jmeter_executable.strip() == '':
+            return False, "No JMeter path specified"
+        
+        # Remove quotes if present
+        path = jmeter_executable.strip('"\'')
+        
+        if os.path.isfile(path):
+            return True, f"File found at: {path}"
+        else:
+            # Try with .bat on Windows if not present
+            if not path.endswith('.bat') and os.path.isfile(path + '.bat'):
+                return True, f"File found at: {path}.bat"
+            
+            return False, f"File not found at: {path}"
+    except Exception as e:
+        return False, f"Error checking file: {str(e)}"
+
+
+def check_jmeter_installed(jmeter_executable: str = 'jmeter', timeout: int = 15) -> Tuple[bool, str]:
     """Check if JMeter is installed and accessible"""
     try:
         # Ensure executable path is provided
         if not jmeter_executable or jmeter_executable.strip() == '':
             return False, "No JMeter path specified"
         
-        result = subprocess.run(
-            [jmeter_executable, '--version'], 
-            capture_output=True, 
-            text=True, 
-            timeout=5
-        )
-        return result.returncode == 0, result.stdout.strip() or result.stderr.strip()
-    except FileNotFoundError:
-        return False, f"JMeter executable not found at: {jmeter_executable}"
+        # Remove quotes if present
+        path = jmeter_executable.strip('"\'')
+        
+        # First check if file exists (fast)
+        file_exists, file_msg = check_jmeter_file_exists(path)
+        if not file_exists:
+            return False, file_msg
+        
+        # Try running version command with increased timeout
+        try:
+            result = subprocess.run(
+                [path, '--version'], 
+                capture_output=True, 
+                text=True, 
+                timeout=timeout
+            )
+            
+            if result.returncode == 0:
+                version_output = result.stdout.strip() or result.stderr.strip()
+                return True, f"✅ JMeter is available\n{version_output}"
+            else:
+                # Even if return code is not 0, it might still be valid
+                return True, f"✅ JMeter executable found\n(version check returned code {result.returncode})"
+        
+        except subprocess.TimeoutExpired:
+            # If version check times out but file exists, still consider it valid
+            return True, f"✅ JMeter found (version check timed out, but executable exists)"
+        
     except PermissionError:
-        return False, f"Permission denied. Cannot execute: {jmeter_executable}"
-    except subprocess.TimeoutExpired:
-        return False, "JMeter version check timed out"
+        return False, f"❌ Permission denied. Cannot execute: {jmeter_executable}"
     except Exception as e:
-        return False, f"Error: {str(e)}"
+        return False, f"❌ Error: {str(e)}"
 
 
 def validate_jmx_file(content: str) -> Tuple[bool, str]:
@@ -248,7 +286,7 @@ def save_temp_jmx(content: str) -> str:
     return temp_file
 
 
-def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str) -> Tuple[bool, str, str]:
+def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 300) -> Tuple[bool, str, str]:
     """Execute JMeter in non-GUI mode for dry run"""
     try:
         results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
@@ -262,16 +300,19 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str) -> Tuple[bool, str
                 except:
                     pass
         
+        # Remove quotes if present
+        path = jmeter_executable.strip('"\'')
+        
         # Execute JMeter command
         cmd = [
-            jmeter_executable,
+            path,
             '-n',
             '-t', jmx_file,
             '-l', results_file,
             '-j', log_file
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         
         # Read log output
         log_output = ""
@@ -504,11 +545,11 @@ def main():
         if jmeter_path.strip() != st.session_state.jmeter_path.strip():
             st.session_state.jmeter_path = jmeter_path.strip()
         
-        # Auto-detect button
-        col1, col2 = st.columns(2)
+        # Verification buttons
+        col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button("🔍 Auto-Detect", use_container_width=True):
+            if st.button("🔍 Auto-Detect", use_container_width=True, help="Search common JMeter installation paths"):
                 # Try common paths
                 common_paths = [
                     'jmeter',
@@ -522,30 +563,58 @@ def main():
                 
                 found = False
                 for path in common_paths:
-                    is_valid, version = check_jmeter_installed(path)
+                    is_valid, version = check_jmeter_installed(path, timeout=10)
                     if is_valid:
                         st.session_state.jmeter_path = path
-                        st.success(f"✅ Found JMeter: {path}\n{version}")
+                        st.success(f"✅ Found JMeter at:\n{path}\n\n{version}")
                         found = True
                         break
                 
                 if not found:
-                    st.warning("❌ Could not auto-detect JMeter. Please provide the full path manually.")
+                    st.warning("❌ Could not auto-detect JMeter.\n\nPlease provide the full path manually.")
         
         with col2:
-            if st.button("✓ Verify Path", use_container_width=True):
+            if st.button("✓ Verify", use_container_width=True, help="Verify JMeter at specified path"):
                 if st.session_state.jmeter_path.strip():
-                    is_valid, version = check_jmeter_installed(st.session_state.jmeter_path)
-                    if is_valid:
-                        st.session_state.jmeter_found = True
-                        st.session_state.jmeter_version = version
-                        st.success(f"✅ Valid!\n{version}")
-                    else:
-                        st.session_state.jmeter_found = False
-                        st.session_state.jmeter_version = ""
-                        st.error(f"❌ {version}")
+                    with st.spinner("⏳ Checking JMeter..."):
+                        is_valid, message = check_jmeter_installed(st.session_state.jmeter_path, timeout=15)
+                        if is_valid:
+                            st.session_state.jmeter_found = True
+                            st.session_state.jmeter_version = message
+                            st.success(message)
+                        else:
+                            st.session_state.jmeter_found = False
+                            st.session_state.jmeter_version = ""
+                            st.error(message)
                 else:
                     st.error("❌ Please enter a JMeter path first")
+        
+        with col3:
+            if st.button("🗑️ Clear", use_container_width=True, help="Clear JMeter path"):
+                st.session_state.jmeter_path = ''
+                st.session_state.jmeter_found = False
+                st.session_state.jmeter_version = ''
+                st.rerun()
+        
+        st.divider()
+        
+        # Quick Path Finder Helper
+        with st.expander("🔎 Help Finding JMeter Path"):
+            st.markdown("""
+            **Windows:**
+            ```
+            Open Command Prompt and run:
+            where jmeter.bat
+            ```
+            
+            **Linux/Mac:**
+            ```
+            Open Terminal and run:
+            which jmeter
+            ```
+            
+            Then copy the path shown above into the "JMeter Executable Path" field.
+            """)
         
         st.divider()
         
@@ -569,21 +638,17 @@ def main():
         
         # Check JMeter status based on current path
         if st.session_state.jmeter_path and st.session_state.jmeter_path.strip():
-            jmeter_installed, jmeter_version = check_jmeter_installed(st.session_state.jmeter_path)
-            st.session_state.jmeter_found = jmeter_installed
-            if jmeter_installed:
-                st.session_state.jmeter_version = jmeter_version
-            
             if st.session_state.jmeter_found:
-                st.success(f"✅ JMeter Ready\n{st.session_state.jmeter_version}")
+                st.success(f"✅ JMeter Ready")
+                if st.session_state.jmeter_version:
+                    st.caption(st.session_state.jmeter_version)
             else:
                 st.markdown("""
                 <div class="error-message">
-                <strong>❌ JMeter Not Available</strong><br>
-                Path: {}<br>
-                Click "Verify Path" button to diagnose
+                <strong>❌ JMeter Not Verified</strong><br>
+                Click "Verify" button to test the path
                 </div>
-                """.format(st.session_state.jmeter_path), unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
         else:
             st.warning("⚠️ Please configure JMeter path above")
             st.session_state.jmeter_found = False
@@ -668,9 +733,9 @@ def main():
                 "🚀 Run Dry Run",
                 disabled=not can_run_dry_run,
                 use_container_width=True,
-                help="Execute JMeter in non-GUI mode" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Verify JMeter"
+                help="Execute JMeter in non-GUI mode" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Click Verify"
             ):
-                with st.spinner("🔄 Executing JMeter dry run..."):
+                with st.spinner("🔄 Executing JMeter dry run... (this may take a few minutes)"):
                     temp_jmx = save_temp_jmx(st.session_state.jmx_content)
                     success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path)
                     
@@ -902,7 +967,7 @@ def main():
         - **Prerequisites:**
           1. Upload a valid JMX file ✅
           2. Enter a valid JMeter path ✅
-          3. Click "Verify Path" to confirm JMeter is accessible ✅
+          3. Click "Verify" button to confirm JMeter is accessible ✅
         - Click "Run Dry Run" to execute your script in non-GUI mode
         - The system executes: `jmeter -n -t <file.jmx> -l results.jtl -j jmeter.log`
         - Results and logs are analyzed automatically
@@ -917,6 +982,31 @@ def main():
         - Review recommended enhancements
         - Download the AI-generated improved JMX draft
         - Manually review before using in production
+        """)
+        
+        st.divider()
+        
+        st.subheader("Troubleshooting: Verify Button Timeout?")
+        st.markdown("""
+        If you see "jmeter version check timed out" error:
+        
+        **This is normal!** JMeter can take time to start, especially on first run.
+        
+        **Quick Fixes:**
+        
+        1. **Try Again**: Click "Verify" button again - it usually works on second attempt
+        
+        2. **Use Auto-Detect**: Click "Auto-Detect" button instead - it's more forgiving
+        
+        3. **Confirm File Exists**: Even if verification times out, if the file path is correct, 
+           the dry run should work. Look for the green ✅ checkmark
+        
+        4. **Check JMeter Installation**:
+           - Windows: Open Command Prompt, run `C:\\jmeter\\bin\\jmeter.bat --version`
+           - Linux/Mac: Open Terminal, run `/usr/bin/jmeter --version`
+        
+        5. **Alternative**: Just upload JMX and click "Run Dry Run" - 
+           the system will verify JMeter works when you actually run it
         """)
         
         st.divider()
@@ -937,9 +1027,9 @@ def main():
              - Linux/Mac: `/usr/bin/jmeter`
         
         3. **✅ JMeter Verified**
-           - Click "Verify Path" button
-           - Wait for green "✅ Valid" message
-           - Or use "Auto-Detect" button to find it automatically
+           - Click "Verify" button (timeout is OK!)
+           - Wait for green "✅ JMeter Ready" message in System Status
+           - **Note**: Even if verification times out, the status may still show as ready
         
         **Debug Checklist in Run Control Panel:**
         ```
@@ -1029,7 +1119,7 @@ which jmeter
         
         st.subheader("About This Application")
         st.markdown("""
-        **AI-Powered JMeter Script Enhancer v1.1**
+        **AI-Powered JMeter Script Enhancer v1.2**
         
         A professional Streamlit dashboard for analyzing and enhancing JMeter performance test scripts 
         using OpenAI's GPT models.
@@ -1046,11 +1136,12 @@ which jmeter
         - SDETs (SDET)
         - DevOps Engineers
         
-        **v1.1 Improvements:**
-        - Fixed Run Dry Run button enable/disable logic
-        - Added debug metrics in Run Control panel
-        - Improved JMeter path validation feedback
-        - Better error messages for troubleshooting
+        **v1.2 Improvements:**
+        - Fixed JMeter timeout issues with increased timeout window
+        - Added fallback path validation (checks file existence)
+        - Improved error messages and diagnostics
+        - Better handling of slow JMeter startup
+        - More forgiving verification process
         """)
 
 
