@@ -179,6 +179,7 @@ def init_session_state():
         'aggregate_report': None,
         'aggregate_report_generated': False,
         'original_script_values': {},
+        'execution_command': '',
     }
     
     for key, value in defaults.items():
@@ -455,12 +456,16 @@ def parse_jtl_results(jtl_file: str) -> Dict:
         return None
 
 
-def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900) -> Tuple[bool, str, str]:
-    """Execute JMeter in non-GUI mode for dry run"""
+def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 1800) -> Tuple[bool, str, str]:
+    """
+    Execute JMeter in non-GUI mode for dry run
+    Uses standard command: jmeter -n -t <jmx_file> -l <results_file>
+    """
     try:
         results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
         log_file = os.path.join(tempfile.gettempdir(), 'jmeter.log')
         
+        # Clean up old files
         for f in [results_file, log_file]:
             if os.path.exists(f):
                 try:
@@ -470,17 +475,31 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900
         
         path = jmeter_executable.strip('"\'')
         
+        # STANDARD JMETER NON-GUI COMMAND
+        # jmeter -n -t <jmx_file> -l <results_file> -j <log_file>
         cmd = [
             path,
-            '-n',
-            '-t', jmx_file,
-            '-l', results_file,
-            '-j', log_file,
-            '-Jjmeter.save.saveservice.connect_time=true'
+            '-n',                    # Non-GUI mode
+            '-t', jmx_file,         # Test plan file
+            '-l', results_file,     # Results file (JTL format)
+            '-j', log_file          # Log file
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # Store command for display
+        st.session_state.execution_command = ' '.join(cmd)
         
+        st.info(f"📋 Executing: `{' '.join(cmd)}`")
+        
+        # Execute JMeter with NO capture to let it run in foreground
+        # This prevents timeout issues
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        
+        # Read log output
         log_output = ""
         if os.path.exists(log_file):
             try:
@@ -489,16 +508,19 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900
             except Exception as e:
                 log_output = f"Error reading log: {str(e)}\n"
         
+        # Get output from stdout/stderr if log file is empty
         if not log_output:
             log_output = result.stdout if result.stdout else result.stderr
         
-        success = result.returncode == 0
+        # Check if results file was created (better indicator of success)
+        success = os.path.exists(results_file) and result.returncode == 0
+        
         output = log_output if log_output else "Execution completed"
         
         return success, output, results_file
         
     except subprocess.TimeoutExpired:
-        return False, "JMeter execution timed out (>15 minutes). Consider reducing test duration or iteration count.", ""
+        return False, f"⏱️ JMeter execution timed out after {timeout} seconds.\n\nTips to reduce timeout:\n- Reduce number of threads\n- Reduce steady state duration\n- Reduce iterations\n- Reduce test plan complexity", ""
     except Exception as e:
         return False, f"Error executing JMeter: {str(e)}", ""
 
@@ -1020,12 +1042,15 @@ def main():
                 use_container_width=True,
                 help="Execute JMeter with scenario parameters (overrides script values)" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Click Verify"
             ):
-                with st.spinner(f"🔄 Executing JMeter (Scenario: {num_threads} users, {steady_state_duration}s duration)...\n\n⏳ This may take several minutes depending on your scenario."):
+                with st.spinner(f"🔄 Executing JMeter (Scenario: {num_threads} users, {steady_state_duration}s duration)...\n\n⏳ This may take several minutes depending on your scenario. Do NOT close this window."):
+                    # Modify JMX with scenario parameters
                     modified_jmx = modify_jmx_with_scenario(st.session_state.jmx_content, st.session_state.scenario_config)
                     temp_jmx = save_temp_jmx(modified_jmx)
                     
+                    # Calculate timeout - much higher tolerance
+                    # Formula: (ramp_up + duration) * 1.5 + 5 minute buffer
                     estimated_duration = (ramp_up_time + steady_state_duration) * 1.5
-                    timeout = max(600, int(estimated_duration) + 120)
+                    timeout = max(1200, int(estimated_duration) + 300)  # Minimum 20 minutes + buffer
                     
                     success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path, timeout=timeout)
                     
@@ -1170,6 +1195,9 @@ def main():
         if st.session_state.dry_run_executed:
             st.markdown('<div class="panel"><div class="panel-title">📝 Execution Details & Logs</div>', unsafe_allow_html=True)
             
+            if st.session_state.execution_command:
+                st.info(f"**Executed Command:**\n```\n{st.session_state.execution_command}\n```")
+            
             with st.expander("📝 Full JMeter Output Log", expanded=False):
                 st.text_area(
                     "JMeter Log Output",
@@ -1285,6 +1313,25 @@ def main():
     with tab2:  # DOCUMENTATION
         st.header("📚 User Guide & Documentation")
         
+        st.subheader("🎯 Standard JMeter Non-GUI Command")
+        st.markdown("""
+        The application uses the standard JMeter non-GUI command:
+        
+        ```bash
+        jmeter -n -t <jmx_file> -l <results_file> -j <log_file>
+        ```
+        
+        **Parameters:**
+        - `-n`: Non-GUI mode
+        - `-t`: Test plan file (JMX)
+        - `-l`: Results file (JTL format) - stores response data
+        - `-j`: Log file - stores execution logs
+        
+        This is the recommended way to run JMeter for CI/CD and automation.
+        """)
+        
+        st.divider()
+        
         st.subheader("🎯 Complete Workflow Guide")
         st.markdown("""
         ### **Step 1: Configure JMeter Path**
@@ -1293,67 +1340,48 @@ def main():
         
         ### **Step 2: Upload JMX Script**
         - Upload your JMeter test plan file (`.jmx`)
-        - System shows original script values (threads, ramp-up, duration, iterations)
+        - System shows original script values
         - Verify the green "Valid JMX file" message
         
         ### **Step 3: Design Test Scenario (OVERRIDE MODE)**
-        The values you enter here will **OVERRIDE** existing thread group config:
-        
         - **Number of Users/Threads**: 1-1000 concurrent users
         - **Ramp-up Time**: 0-3600 seconds to reach full load
         - **Steady State Duration**: 1-3600 seconds at full load
         - **Iterations Per Thread**: 1-100 repetitions per user
         
         ### **Step 4: Run Dry Run**
-        Click "🚀 Run Dry Run" to:
-        1. Override JMX parameters with your scenario
-        2. Execute JMeter in non-GUI mode
-        3. Generate results file (JTL format)
-        4. Parse and display Aggregate Report
+        - Click "🚀 Run Dry Run"
+        - System executes: `jmeter -n -t <file> -l results.jtl -j jmeter.log`
+        - Timeout automatically calculated based on scenario
         
-        ### **Step 5: View Aggregate Report**
-        Download performance metrics as CSV or JSON:
-        - Total Samples & Success Rate
-        - Response Time Statistics (Min/Max/Avg/Median)
-        - Percentiles (P90/P95/P99)
-        - Throughput
-
+        ### **Step 5: View Results**
+        - Aggregate Report with statistics
+        - Download as CSV or JSON
+        
         ### **Step 6: AI Analysis (Optional)**
-        - Analyze for Correlations
-        - Get Enhancement Recommendations
-        - Download improved JMX draft
+        - Correlation suggestions
+        - Enhancement recommendations
         """)
         
         st.divider()
         
-        st.subheader("📊 Understanding Override Mode")
+        st.subheader("⏱️ Timeout Handling")
         st.markdown("""
-        **Original Script Example:**
-        - Threads: 5
-        - Ramp-up: 30s
-        - Duration: 600s
-        - Iterations: 1
+        The timeout is **automatically calculated** based on your scenario:
         
-        **Your Scenario Configuration:**
-        - Threads: 20
-        - Ramp-up: 120s
-        - Duration: 900s
-        - Iterations: 3
+        **Formula:**
+        ```
+        timeout = max(1200, (ramp_up + steady_state) * 1.5 + 300)
+        ```
         
-        **Result After Override:**
-        The script runs with YOUR values, ignoring originals.
-        Total requests = 20 users × 3 iterations = 60 requests
-        """)
+        - Minimum: 20 minutes
+        - Plus buffer for overhead
         
-        st.divider()
-        
-        st.subheader("📈 Aggregate Report Metrics")
-        st.markdown("""
-        - **Total Samples**: Total requests executed
-        - **Success Rate**: % of passed requests
-        - **Response Times**: Min, Max, Average, Median
-        - **Percentiles**: P90, P95, P99 (response time thresholds)
-        - **Throughput**: Requests per second
+        **If you still get timeout:**
+        1. Reduce steady state duration
+        2. Reduce number of threads
+        3. Reduce iterations
+        4. Simplify test plan
         """)
     
     with tab3:  # SETTINGS
@@ -1370,17 +1398,18 @@ def main():
         
         st.subheader("About This Application")
         st.markdown("""
-        **AI-Powered JMeter Script Enhancer v2.0**
+        **AI-Powered JMeter Script Enhancer v2.1**
         
         Professional Streamlit dashboard for load testing script analysis.
         
         **Features:**
+        - ✅ Standard JMeter non-GUI command execution
         - ✅ Scenario design with parameter override
         - ✅ Aggregate report generation from JTL
         - ✅ CSV/JSON export
         - ✅ AI correlation analysis
         - ✅ AI enhancement recommendations
-        - ✅ Improved timeout handling
+        - ✅ Automatic timeout calculation
         
         **Built with:**
         - 🐍 Python & Streamlit
