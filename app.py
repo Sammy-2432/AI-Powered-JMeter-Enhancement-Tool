@@ -206,10 +206,9 @@ def init_session_state():
         'aggregate_report_generated': False,
         'original_thread_groups': [],
         'execution_command': '',
-        # CSV Dataset Config state
-        'csv_files': {},  # Maps CSV config names to file paths
-        'csv_configs_found': [],  # List of CSV configs found in JMX
-        'csv_file_paths': {},  # Custom paths provided by user
+        'csv_files': {},
+        'csv_configs_found': [],
+        'csv_file_paths': {},
     }
     
     for key, value in defaults.items():
@@ -230,7 +229,6 @@ def extract_csv_dataset_configs(jmx_content: str) -> List[Dict]:
         root = ET.fromstring(jmx_content)
         csv_configs = []
         
-        # Find all CSVDataSet elements
         csv_datasets = root.findall('.//CSVDataSet')
         
         for idx, csv_elem in enumerate(csv_datasets):
@@ -245,36 +243,29 @@ def extract_csv_dataset_configs(jmx_content: str) -> List[Dict]:
                 'stop_on_eof': False,
             }
             
-            # Try to get name
             for attr in csv_elem.attrib:
                 if 'testname' in attr.lower():
                     csv_info['name'] = csv_elem.attrib[attr]
                     break
             
-            # Extract filename
             for elem in csv_elem.findall(".//stringProp[@name='filename']"):
                 raw_value = elem.text if elem.text else None
                 if raw_value:
                     csv_info['filename_raw'] = raw_value
-                    # Check if it's an absolute path or relative
                     csv_info['filename'] = raw_value
             
-            # Extract delimiter
             for elem in csv_elem.findall(".//stringProp[@name='delimiter']"):
                 if elem.text:
                     csv_info['delimiter'] = elem.text
             
-            # Extract variable names
             for elem in csv_elem.findall(".//stringProp[@name='variableNames']"):
                 if elem.text:
                     csv_info['variable_names'] = elem.text
             
-            # Extract recycle
             for elem in csv_elem.findall(".//boolProp[@name='recycle']"):
                 if elem.text:
                     csv_info['recycle'] = elem.text.lower() == 'true'
             
-            # Extract stopThread
             for elem in csv_elem.findall(".//boolProp[@name='stopThread']"):
                 if elem.text:
                     csv_info['stop_on_eof'] = elem.text.lower() == 'true'
@@ -294,14 +285,12 @@ def extract_property_value(value_str: str) -> Tuple[Optional[int], str]:
     
     value_str = value_str.strip()
     
-    # Case 1: Plain numeric value
     try:
         num_val = int(value_str)
         return num_val, "plain"
     except ValueError:
         pass
     
-    # Case 2: JMeter property with default: ${__P(name, default)}
     property_match = re.search(r'\$\{__P\([^,]+,\s*(\d+)\)\}', value_str)
     if property_match:
         try:
@@ -310,11 +299,9 @@ def extract_property_value(value_str: str) -> Tuple[Optional[int], str]:
         except ValueError:
             pass
     
-    # Case 3: Simple variable: ${VarName}
     if re.match(r'^\$\{[^}]+\}$', value_str):
         return None, "variable"
     
-    # Case 4: Complex expression or invalid
     return None, "expression"
 
 
@@ -344,13 +331,11 @@ def extract_all_thread_groups(jmx_content: str) -> List[Dict]:
                 'iterations_source': 'unknown',
             }
             
-            # Try to get ThreadGroup name
             for attr in tg.attrib:
                 if 'testname' in attr.lower():
                     tg_info['name'] = tg.attrib[attr]
                     break
             
-            # Extract number of threads
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
                 raw_value = elem.text if elem.text else None
                 if raw_value:
@@ -360,7 +345,6 @@ def extract_all_thread_groups(jmx_content: str) -> List[Dict]:
                         tg_info['num_threads'] = num_val
                         tg_info['num_threads_source'] = source
             
-            # Extract ramp-up time
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.ramp_time']"):
                 raw_value = elem.text if elem.text else None
                 if raw_value:
@@ -370,7 +354,6 @@ def extract_all_thread_groups(jmx_content: str) -> List[Dict]:
                         tg_info['ramp_up_time'] = num_val
                         tg_info['ramp_up_time_source'] = source
             
-            # Extract duration
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.duration']"):
                 raw_value = elem.text if elem.text else None
                 if raw_value:
@@ -380,7 +363,6 @@ def extract_all_thread_groups(jmx_content: str) -> List[Dict]:
                         tg_info['steady_state_duration'] = num_val
                         tg_info['steady_state_duration_source'] = source
             
-            # Extract loop count (iterations)
             for elem in tg.findall(".//elementProp[@name='ThreadGroup.main_controller']/stringProp[@name='LoopController.loops']"):
                 raw_value = elem.text if elem.text else None
                 if raw_value:
@@ -476,18 +458,15 @@ def modify_csv_dataset_paths(jmx_content: str, csv_file_paths: Dict[str, str]) -
         modified_count = 0
         
         for idx, csv_elem in enumerate(csv_datasets):
-            # Get the name of this CSV config
             csv_name = 'CSVDataSet'
             for attr in csv_elem.attrib:
                 if 'testname' in attr.lower():
                     csv_name = csv_elem.attrib[attr]
                     break
             
-            # Check if we have a path for this CSV config
             if csv_name in csv_file_paths:
                 new_path = csv_file_paths[csv_name]
                 
-                # Update filename element
                 for elem in csv_elem.findall(".//stringProp[@name='filename']"):
                     old_path = elem.text
                     elem.text = new_path
@@ -520,14 +499,12 @@ def modify_all_thread_groups(jmx_content: str, scenario: Dict) -> str:
         st.info(f"📋 Found {len(thread_groups)} ThreadGroup(s). {'Applying to ALL.' if apply_to_all else 'Applying to selected.'}")
         
         for tg_idx, tg in enumerate(thread_groups):
-            # Skip if not applying to all and this ThreadGroup is not selected
             if not apply_to_all and tg_idx not in selected_indices:
                 st.info(f"⏭️ Skipping ThreadGroup {tg_idx + 1}")
                 continue
             
             st.info(f"✏️ Modifying ThreadGroup {tg_idx + 1}/{len(thread_groups)}")
             
-            # Override Number of Threads
             threads_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
                 elem.text = str(scenario['num_threads'])
@@ -536,7 +513,6 @@ def modify_all_thread_groups(jmx_content: str, scenario: Dict) -> str:
             if not threads_modified:
                 st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find num_threads element")
             
-            # Override Ramp-up Time
             rampup_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.ramp_time']"):
                 elem.text = str(scenario['ramp_up_time'])
@@ -545,7 +521,6 @@ def modify_all_thread_groups(jmx_content: str, scenario: Dict) -> str:
             if not rampup_modified:
                 st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find ramp_time element")
             
-            # Override Duration
             duration_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.duration']"):
                 elem.text = str(scenario['steady_state_duration'])
@@ -554,7 +529,6 @@ def modify_all_thread_groups(jmx_content: str, scenario: Dict) -> str:
             if not duration_modified:
                 st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find duration element")
             
-            # Override Loop Count (Iterations)
             loop_modified = False
             for elem in tg.findall(".//elementProp[@name='ThreadGroup.main_controller']/stringProp[@name='LoopController.loops']"):
                 elem.text = str(scenario['iterations'])
@@ -700,7 +674,7 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 180
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=working_dir  # Set working directory for relative CSV paths
+            cwd=working_dir
         )
         
         log_output = ""
@@ -1216,6 +1190,7 @@ def main():
         <div class="override-info">
         <strong>ℹ️ MULTIPLE THREADGROUP HANDLING</strong><br>
         Choose whether to apply scenario settings to ALL ThreadGroups or select specific ones.
+        All extracted values (plain numbers or default values from properties) will be overridden.
         </div>
         """, unsafe_allow_html=True)
         
@@ -1356,7 +1331,7 @@ def main():
                     modified_jmx = modify_all_thread_groups(modified_jmx, st.session_state.scenario_config)
                     temp_jmx = save_temp_jmx(modified_jmx)
                     
-                    # Determine working directory (use parent of JMX location if available)
+                    # Determine working directory
                     working_dir = os.path.dirname(temp_jmx) if temp_jmx else None
                     
                     # Calculate timeout
@@ -1464,7 +1439,7 @@ def main():
                 st.metric("Failed Requests", report['failure_count'])
             
             with col2:
-                st.subheader("Response Time Statistics (ms)")
+                st.subheading("Response Time Statistics (ms)")
                 st.metric("Min", report['min_response_time'])
                 st.metric("Max", report['max_response_time'])
                 st.metric("Median", report['median_response_time'])
@@ -1491,4 +1466,349 @@ def main():
                     label="📥 Download Aggregate Report (CSV)",
                     data=csv_report,
                     file_name=f"jmeter_aggregate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                json_report = json.dumps(report, indent=2, default=str)
+                st.download_button(
+                    label="📥 Download Report (JSON)",
+                    data=json_report,
+                    file_name=f"jmeter_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # ==================== RUN OUTPUT SUMMARY PANEL ====================
+        if st.session_state.dry_run_executed:
+            st.markdown('<div class="panel"><div class="panel-title">📝 Execution Details & Logs</div>', unsafe_allow_html=True)
+            
+            if st.session_state.execution_command:
+                st.info(f"**Executed Command:**\n```\n{st.session_state.execution_command}\n```")
+            
+            with st.expander("📝 Full JMeter Output Log", expanded=False):
+                st.text_area(
+                    "JMeter Log Output",
+                    value=st.session_state.last_run_output,
+                    height=300,
+                    disabled=True
+                )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # ==================== CORRELATION SUGGESTIONS PANEL ====================
+            if st.session_state.api_key and st.session_state.last_run_status == "success":
+                st.markdown('<div class="panel"><div class="panel-title">🔗 AI-Suggested Correlations</div>', unsafe_allow_html=True)
+                
+                if st.button("🤖 Analyze for Correlations", use_container_width=True, key="correlation_btn"):
+                    with st.spinner("🧠 Analyzing with OpenAI GPT..."):
+                        correlations = analyze_correlations_with_ai(
+                            st.session_state.jmx_content,
+                            st.session_state.last_run_output,
+                            st.session_state.api_key
+                        )
+                        st.session_state.correlations_found = correlations
+                        st.rerun()
+                
+                if st.session_state.correlations_found:
+                    for idx, corr in enumerate(st.session_state.correlations_found, 1):
+                        st.markdown(f"""
+                        <div class="correlation-suggestion">
+                        <strong>Suggestion {idx}: {corr.get('variable_name', 'N/A')}</strong><br>
+                        <strong>Priority:</strong> {corr.get('priority', 'medium').upper()}<br>
+                        <strong>Source:</strong> {corr.get('source', 'N/A')}<br>
+                        <strong>Pattern:</strong> <code>{corr.get('extraction_pattern', 'N/A')}</code><br>
+                        <strong>Reason:</strong> {corr.get('reason', 'N/A')}
+                        </div>
+                        """, unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # ==================== ENHANCEMENT DECISION PANEL ====================
+            st.markdown('<div class="panel"><div class="panel-title">🎯 Script Enhancement</div>', unsafe_allow_html=True)
+            
+            enhance_choice = st.radio(
+                "Would you like to enhance this script using AI recommendations?",
+                options=["Not now", "Yes, analyze and enhance"],
+                horizontal=True,
+                key="enhance_choice"
+            )
+            
+            if enhance_choice == "Yes, analyze and enhance" and st.session_state.api_key:
+                if st.button("💡 Get Enhancement Recommendations", use_container_width=True, key="enhance_btn"):
+                    with st.spinner("🧠 Analyzing with OpenAI GPT..."):
+                        recommendations, improved_draft = suggest_enhancements_with_ai(
+                            st.session_state.jmx_content,
+                            st.session_state.last_run_output,
+                            st.session_state.api_key
+                        )
+                        st.session_state.enhancement_recommendations = recommendations
+                        st.session_state.improved_jmx_draft = improved_draft
+                        st.session_state.enhancements_suggested = True
+                        st.rerun()
+                
+                if st.session_state.enhancements_suggested:
+                    st.success("✅ Enhancement analysis complete!")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # ==================== ENHANCEMENT RECOMMENDATIONS PANEL ====================
+        if st.session_state.enhancements_suggested and st.session_state.enhancement_recommendations:
+            st.markdown('<div class="panel"><div class="panel-title">🚀 Enhancement Recommendations</div>', unsafe_allow_html=True)
+            
+            for rec in st.session_state.enhancement_recommendations:
+                priority_color = {
+                    'critical': '🔴',
+                    'high': '🟠',
+                    'medium': '🟡',
+                    'low': '🟢'
+                }.get(rec.get('priority', 'medium').lower(), '⚫')
+                
+                st.markdown(f"""
+                <div class="enhancement-recommendation">
+                <strong>{priority_color} {rec.get('title', 'Enhancement')}</strong><br>
+                <strong>Category:</strong> {rec.get('category', 'N/A')}<br>
+                <strong>Description:</strong> {rec.get('description', 'N/A')}<br>
+                <strong>Implementation:</strong> {rec.get('implementation', 'N/A')}<br>
+                <strong>Expected Impact:</strong> {rec.get('expected_impact', 'N/A')}
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # ==================== IMPROVED JMX PREVIEW PANEL ====================
+        if st.session_state.improved_jmx_draft:
+            st.markdown('<div class="panel"><div class="panel-title">📦 Improved JMX Draft Preview</div>', unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("📋 View Draft", use_container_width=True, key="view_draft_btn"):
+                    with st.expander("Improved JMX Draft", expanded=True):
+                        st.code(st.session_state.improved_jmx_draft, language='xml')
+            
+            with col2:
+                st.download_button(
+                    label="⬇️ Download Draft",
+                    data=st.session_state.improved_jmx_draft,
+                    file_name="jmeter_improved_draft.jmx",
+                    mime="application/xml",
+                    use_container_width=True
+                )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab2:  # DOCUMENTATION
+        st.header("📚 User Guide & Documentation")
+        
+        st.subheader("🎯 CSV Dataset Configuration Guide")
+        st.markdown("""
+        ### **What is CSV Dataset Configuration?**
+        CSV Dataset Config is a JMeter element that reads data from CSV files and uses it in your test.
+        
+        ### **Filepath Handling**
+        
+        **Two Ways to Specify Paths:**
+        
+        1. **Absolute Path** (Full path from root)
+           - Windows: `C:\\Users\\testdata\\users.csv`
+           - Linux/Mac: `/home/user/testdata/users.csv`
+        
+        2. **Relative Path** (Relative to where JMeter runs)
+           - `data/users.csv`
+           - `../data/users.csv`
+        
+        ### **The Problem**
+        When you upload a JMX file to this dashboard, the CSV filepaths in the script are **fixed**.
+        
+        **Example:**
+        - Original path: `C:\\myproject\\data\\users.csv`
+        - Your machine path: `D:\\projects\\data\\users.csv`
+        - **Result:** JMeter can't find the file ❌
+        
+        ### **The Solution**
+        
+        This dashboard now **detects CSV Dataset Configs** and allows you to:
+        
+        1. **View** the original CSV filepaths
+        2. **Update** them with your actual filepaths
+        3. **Override** them when running the test
+        
+        ### **How to Use**
+        
+        **Step 1: Upload JMX**
+        - Dashboard detects CSV configs automatically
+        
+        **Step 2: Update CSV Paths**
+        - Expand "CSV Dataset Configs" section
+        - Enter your actual CSV filepath
+        - Dashboard modifies the JMX before execution
+        
+        **Step 3: Run Test**
+        - Click "Run Dry Run"
+        - Modified JMX uses your CSV paths
+        
+        ### **Example Workflow**
+        
+        **Original CSV Config in JMX:**
+        ```
+        Filename: /path/to/data.csv
+        Variables: username, password
+        ```
+        
+        **Your Setup:**
+        ```
+        Filepath: C:\\TestData\\credentials.csv
+        ```
+        
+        **After Update:**
+        Dashboard modifies JMX:
+        ```
+        Filename: C:\\TestData\\credentials.csv
+        Variables: username, password
+        ```
+        
+        ### **Best Practices**
+        
+        ✅ **Use Absolute Paths** for clarity
+        - Makes it clear where files are located
+        - Less likely to break on different machines
+        
+        ✅ **Use Relative Paths** for portability
+        - Works if data folder is relative to JMeter
+        - Good for CI/CD pipelines
+        
+        ❌ **Avoid**
+        - Hardcoded network paths (may not be accessible)
+        - Paths with spaces (quote them: `"C:\\My Data\\file.csv"`)
+        
+        ### **Troubleshooting CSV Issues**
+        
+        **Error: "Cannot open file..."**
+        - Check if file exists at the path
+        - Verify file has read permissions
+        - Try absolute path instead of relative
+        
+        **Error: "No such file or directory"**
+        - Path separator wrong (use / for all systems in JMeter)
+        - File moved or deleted
+        - Working directory changed
+        """)
+        
+        st.divider()
+        
+        st.subheader("🎯 Complete Workflow Guide")
+        st.markdown("""
+        ### **Step 1: Upload JMX Script**
+        - Dashboard detects ThreadGroups and CSV configs
+        - Shows original values extracted from script
+        
+        ### **Step 2: Configure CSV Paths (if needed)**
+        - Update any CSV filepaths that don't match your setup
+        - Leave blank if paths are correct
+        
+        ### **Step 3: Design Test Scenario**
+        - Set threads, ramp-up, duration, iterations
+        - Choose: Apply to ALL or SELECTED ThreadGroups
+        
+        ### **Step 4: Run Dry Run**
+        - System modifies JMX with your settings
+        - Updates CSV paths
+        - Updates ThreadGroup parameters
+        - Executes JMeter
+        
+        ### **Step 5: View Results**
+        - Aggregate Report with metrics
+        - Download as CSV or JSON
+        
+        ### **Step 6: AI Analysis (Optional)**
+        - Get correlation suggestions
+        - Get enhancement recommendations
+        """)
+        
+        st.divider()
+        
+        st.subheader("🔧 Property Values in Scripts")
+        st.markdown("""
+        ### **What are Properties?**
+        JMeter properties allow dynamic values:
+        
+        **Example:**
+        - Plain: `10`
+        - Property: `${__P(threads, 10)}`
+        
+        ### **How Dashboard Handles Them**
+        
+        **Plain Values:** `30` → Extracted directly
+        **Property Values:** `${__P(hBBT_01_Threads, 30)}` → Extracts default `30`
+        **Variables:** `${Threads}` → Cannot extract (depends on runtime)
+        
+        ### **Override Behavior**
+        - All values (plain or property) are overridden with your scenario values
+        - Original properties are replaced with plain values
+        """)
+    
+    with tab3:  # SETTINGS
+        st.header("⚙️ Settings & Preferences")
+        
+        st.subheader("Current Configuration")
+        st.json({
+            "jmeter_path": st.session_state.jmeter_path or "Not configured",
+            "jmeter_status": "Ready" if st.session_state.jmeter_found else "Not verified",
+            "threadgroups_detected": len(st.session_state.original_thread_groups),
+            "csv_configs_detected": len(st.session_state.csv_configs_found),
+            "scenario_config": st.session_state.scenario_config
+        })
+        
+        st.divider()
+        
+        st.subheader("CSV Dataset Configs Detected")
+        if st.session_state.csv_configs_found:
+            for idx, csv_config in enumerate(st.session_state.csv_configs_found):
+                st.write(f"""
+                **Config {idx + 1}: {csv_config['name']}**
+                - Current Path: `{csv_config['filename']}`
+                - Variables: {csv_config['variable_names']}
+                - Delimiter: `{csv_config['delimiter']}`
+                """)
+        else:
+            st.info("No CSV Dataset Configs found in current script")
+        
+        st.divider()
+        
+        st.subheader("About This Application")
+        st.markdown("""
+        **AI-Powered JMeter Script Enhancer v3.0**
+        
+        Professional Streamlit dashboard for load testing script analysis.
+        
+        **v3.0 Features:**
+        - ✅ CSV Dataset Config detection & path override
+        - ✅ Multiple ThreadGroup handling
+        - ✅ Property value extraction from JMeter properties
+        - ✅ Apply to ALL or SELECT ThreadGroups
+        - ✅ Standard JMeter non-GUI command execution
+        - ✅ Scenario design with parameter override
+        - ✅ Aggregate report generation
+        - ✅ CSV/JSON export
+        - ✅ AI correlation analysis
+        - ✅ AI enhancement recommendations
+        - ✅ Improved timeout handling
+        
+        **Built with:**
+        - 🐍 Python & Streamlit
+        - 🤖 OpenAI GPT-4 Turbo
+        - 📊 JMeter
+        - 📋 XML parsing for JMX analysis
+        """)
+
+
+# ============================================================================
+# APP ENTRY POINT
+# ============================================================================
+
+if __name__ == "__main__":
+    main()
