@@ -124,6 +124,15 @@ st.markdown("""
         margin: 0.5rem 0;
         border-radius: 4px;
     }
+    
+    .error-message {
+        background-color: #ffe6e6;
+        border-left: 4px solid #d62728;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 4px;
+        color: #d62728;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -137,6 +146,7 @@ def init_session_state():
     defaults = {
         'jmeter_path': '',
         'jmeter_found': False,
+        'jmeter_version': '',
         'jmx_file': None,
         'jmx_filename': '',
         'jmx_content': '',
@@ -166,10 +176,23 @@ init_session_state()
 def check_jmeter_installed(jmeter_executable: str = 'jmeter') -> Tuple[bool, str]:
     """Check if JMeter is installed and accessible"""
     try:
-        result = subprocess.run([jmeter_executable, '--version'], capture_output=True, text=True, timeout=5)
-        return result.returncode == 0, result.stdout.strip()
+        # Ensure executable path is provided
+        if not jmeter_executable or jmeter_executable.strip() == '':
+            return False, "No JMeter path specified"
+        
+        result = subprocess.run(
+            [jmeter_executable, '--version'], 
+            capture_output=True, 
+            text=True, 
+            timeout=5
+        )
+        return result.returncode == 0, result.stdout.strip() or result.stderr.strip()
     except FileNotFoundError:
-        return False, "JMeter executable not found at specified path"
+        return False, f"JMeter executable not found at: {jmeter_executable}"
+    except PermissionError:
+        return False, f"Permission denied. Cannot execute: {jmeter_executable}"
+    except subprocess.TimeoutExpired:
+        return False, "JMeter version check timed out"
     except Exception as e:
         return False, f"Error: {str(e)}"
 
@@ -234,7 +257,10 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str) -> Tuple[bool, str
         # Clean up old files
         for f in [results_file, log_file]:
             if os.path.exists(f):
-                os.remove(f)
+                try:
+                    os.remove(f)
+                except:
+                    pass
         
         # Execute JMeter command
         cmd = [
@@ -250,11 +276,18 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str) -> Tuple[bool, str
         # Read log output
         log_output = ""
         if os.path.exists(log_file):
-            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                log_output = f.read()
+            try:
+                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    log_output = f.read()
+            except Exception as e:
+                log_output = f"Error reading log: {str(e)}\n"
+        
+        # Get output from stdout/stderr if log file is empty
+        if not log_output:
+            log_output = result.stdout if result.stdout else result.stderr
         
         success = result.returncode == 0
-        output = log_output if log_output else result.stdout
+        output = log_output if log_output else "No output captured"
         
         return success, output, results_file
         
@@ -463,35 +496,56 @@ def main():
             "JMeter Executable Path",
             value=st.session_state.jmeter_path,
             placeholder="e.g., C:\\jmeter\\bin\\jmeter.bat or /usr/bin/jmeter",
-            help="Full path to jmeter executable (with filename). Use .bat on Windows, no extension on Linux/Mac"
+            help="Full path to jmeter executable (with filename). Use .bat on Windows, no extension on Linux/Mac",
+            key="jmeter_path_input"
         )
         
-        if jmeter_path != st.session_state.jmeter_path:
-            st.session_state.jmeter_path = jmeter_path
+        # Update session state if path changed
+        if jmeter_path.strip() != st.session_state.jmeter_path.strip():
+            st.session_state.jmeter_path = jmeter_path.strip()
         
         # Auto-detect button
-        if st.button("🔍 Auto-Detect JMeter", use_container_width=True):
-            # Try common paths
-            common_paths = [
-                'jmeter',
-                'jmeter.bat',
-                '/usr/bin/jmeter',
-                '/usr/local/bin/jmeter',
-                'C:\\jmeter\\bin\\jmeter.bat',
-                'C:\\Program Files\\jmeter\\bin\\jmeter.bat',
-            ]
-            
-            found = False
-            for path in common_paths:
-                is_valid, version = check_jmeter_installed(path)
-                if is_valid:
-                    st.session_state.jmeter_path = path
-                    st.success(f"✅ Found JMeter: {path}\n{version}")
-                    found = True
-                    break
-            
-            if not found:
-                st.warning("❌ Could not auto-detect JMeter. Please provide the full path manually.")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🔍 Auto-Detect", use_container_width=True):
+                # Try common paths
+                common_paths = [
+                    'jmeter',
+                    'jmeter.bat',
+                    '/usr/bin/jmeter',
+                    '/usr/local/bin/jmeter',
+                    'C:\\jmeter\\bin\\jmeter.bat',
+                    'C:\\Program Files\\jmeter\\bin\\jmeter.bat',
+                    'C:\\Program Files (x86)\\jmeter\\bin\\jmeter.bat',
+                ]
+                
+                found = False
+                for path in common_paths:
+                    is_valid, version = check_jmeter_installed(path)
+                    if is_valid:
+                        st.session_state.jmeter_path = path
+                        st.success(f"✅ Found JMeter: {path}\n{version}")
+                        found = True
+                        break
+                
+                if not found:
+                    st.warning("❌ Could not auto-detect JMeter. Please provide the full path manually.")
+        
+        with col2:
+            if st.button("✓ Verify Path", use_container_width=True):
+                if st.session_state.jmeter_path.strip():
+                    is_valid, version = check_jmeter_installed(st.session_state.jmeter_path)
+                    if is_valid:
+                        st.session_state.jmeter_found = True
+                        st.session_state.jmeter_version = version
+                        st.success(f"✅ Valid!\n{version}")
+                    else:
+                        st.session_state.jmeter_found = False
+                        st.session_state.jmeter_version = ""
+                        st.error(f"❌ {version}")
+                else:
+                    st.error("❌ Please enter a JMeter path first")
         
         st.divider()
         
@@ -501,7 +555,8 @@ def main():
             "Enter your OpenAI API Key",
             value=st.session_state.api_key,
             type="password",
-            help="Your API key for GPT-4 analysis. Get it from https://platform.openai.com/api-keys"
+            help="Your API key for GPT-4 analysis. Get it from https://platform.openai.com/api-keys",
+            key="api_key_input"
         )
         
         if api_key != st.session_state.api_key:
@@ -512,14 +567,23 @@ def main():
         # System Status
         st.subheader("System Status")
         
-        if st.session_state.jmeter_path:
+        # Check JMeter status based on current path
+        if st.session_state.jmeter_path and st.session_state.jmeter_path.strip():
             jmeter_installed, jmeter_version = check_jmeter_installed(st.session_state.jmeter_path)
             st.session_state.jmeter_found = jmeter_installed
-            
             if jmeter_installed:
-                st.success(f"✅ JMeter Available\n{jmeter_version}")
+                st.session_state.jmeter_version = jmeter_version
+            
+            if st.session_state.jmeter_found:
+                st.success(f"✅ JMeter Ready\n{st.session_state.jmeter_version}")
             else:
-                st.error(f"❌ Path Invalid\n{jmeter_version}")
+                st.markdown("""
+                <div class="error-message">
+                <strong>❌ JMeter Not Available</strong><br>
+                Path: {}<br>
+                Click "Verify Path" button to diagnose
+                </div>
+                """.format(st.session_state.jmeter_path), unsafe_allow_html=True)
         else:
             st.warning("⚠️ Please configure JMeter path above")
             st.session_state.jmeter_found = False
@@ -579,15 +643,57 @@ def main():
         # ==================== RUN CONTROL PANEL ====================
         st.markdown('<div class="panel"><div class="panel-title">▶️ Run Control</div>', unsafe_allow_html=True)
         
+        # Debug information
+        debug_col1, debug_col2, debug_col3 = st.columns(3)
+        with debug_col1:
+            st.metric("JMX Loaded", "✅" if st.session_state.jmx_content else "❌")
+        with debug_col2:
+            st.metric("JMeter Ready", "✅" if st.session_state.jmeter_found else "❌")
+        with debug_col3:
+            st.metric("Path Set", "✅" if st.session_state.jmeter_path else "❌")
+        
+        st.divider()
+        
         col1, col2, col3 = st.columns(3)
         
+        # Determine if button should be disabled
+        can_run_dry_run = (
+            bool(st.session_state.jmx_content and st.session_state.jmx_content.strip()) and
+            bool(st.session_state.jmeter_path and st.session_state.jmeter_path.strip()) and
+            st.session_state.jmeter_found
+        )
+        
         with col1:
-            run_button = st.button(
+            if st.button(
                 "🚀 Run Dry Run",
-                disabled=not (st.session_state.jmx_content and st.session_state.jmeter_found),
+                disabled=not can_run_dry_run,
                 use_container_width=True,
-                help="Execute JMeter in non-GUI mode"
-            )
+                help="Execute JMeter in non-GUI mode" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Verify JMeter"
+            ):
+                with st.spinner("🔄 Executing JMeter dry run..."):
+                    temp_jmx = save_temp_jmx(st.session_state.jmx_content)
+                    success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path)
+                    
+                    st.session_state.last_run_output = output
+                    st.session_state.last_run_status = "success" if success else "failed"
+                    st.session_state.dry_run_executed = True
+                    
+                    # Add to history
+                    history_entry = {
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'filename': st.session_state.jmx_filename,
+                        'status': st.session_state.last_run_status,
+                        'summary': f"Execution completed with {'success' if success else 'errors'}"
+                    }
+                    st.session_state.run_history.append(history_entry)
+                    
+                    # Clean up
+                    try:
+                        os.remove(temp_jmx)
+                    except:
+                        pass
+                    
+                    st.rerun()
         
         with col2:
             show_script = st.button(
@@ -595,6 +701,10 @@ def main():
                 disabled=not st.session_state.jmx_content,
                 use_container_width=True
             )
+            
+            if show_script and st.session_state.jmx_content:
+                with st.expander("View Full JMX Script", expanded=True):
+                    st.code(st.session_state.jmx_content, language='xml')
         
         with col3:
             download_button = st.button(
@@ -602,47 +712,15 @@ def main():
                 disabled=not st.session_state.jmx_content,
                 use_container_width=True
             )
-        
-        if show_script and st.session_state.jmx_content:
-            with st.expander("View Full JMX Script", expanded=True):
-                st.code(st.session_state.jmx_content, language='xml')
-        
-        if download_button and st.session_state.jmx_content:
-            st.download_button(
-                label="⬇️ Download JMX",
-                data=st.session_state.jmx_content,
-                file_name=st.session_state.jmx_filename or "jmeter_script.jmx",
-                mime="application/xml"
-            )
-        
-        if run_button:
-            if not st.session_state.api_key:
-                st.warning("⚠️ Please enter your OpenAI API key in the sidebar to enable AI features")
             
-            with st.spinner("🔄 Executing JMeter dry run..."):
-                temp_jmx = save_temp_jmx(st.session_state.jmx_content)
-                success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path)
-                
-                st.session_state.last_run_output = output
-                st.session_state.last_run_status = "success" if success else "failed"
-                st.session_state.dry_run_executed = True
-                
-                # Add to history
-                history_entry = {
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'filename': st.session_state.jmx_filename,
-                    'status': st.session_state.last_run_status,
-                    'summary': f"Execution completed with {'success' if success else 'errors'}"
-                }
-                st.session_state.run_history.append(history_entry)
-                
-                # Clean up
-                try:
-                    os.remove(temp_jmx)
-                except:
-                    pass
-                
-                st.rerun()
+            if download_button and st.session_state.jmx_content:
+                st.download_button(
+                    label="⬇️ Download JMX",
+                    data=st.session_state.jmx_content,
+                    file_name=st.session_state.jmx_filename or "jmeter_script.jmx",
+                    mime="application/xml",
+                    use_container_width=True
+                )
         
         st.markdown('</div>', unsafe_allow_html=True)
         
@@ -688,7 +766,7 @@ def main():
             if st.session_state.api_key and st.session_state.last_run_status == "success":
                 st.markdown('<div class="panel"><div class="panel-title">🔗 AI-Suggested Correlations</div>', unsafe_allow_html=True)
                 
-                if st.button("🤖 Analyze for Correlations", use_container_width=True):
+                if st.button("🤖 Analyze for Correlations", use_container_width=True, key="correlation_btn"):
                     with st.spinner("🧠 Analyzing with OpenAI GPT..."):
                         correlations = analyze_correlations_with_ai(
                             st.session_state.jmx_content,
@@ -696,6 +774,7 @@ def main():
                             st.session_state.api_key
                         )
                         st.session_state.correlations_found = correlations
+                        st.rerun()
                 
                 if st.session_state.correlations_found:
                     for idx, corr in enumerate(st.session_state.correlations_found, 1):
@@ -717,11 +796,12 @@ def main():
             enhance_choice = st.radio(
                 "Would you like to enhance this script using AI recommendations?",
                 options=["Not now", "Yes, analyze and enhance"],
-                horizontal=True
+                horizontal=True,
+                key="enhance_choice"
             )
             
             if enhance_choice == "Yes, analyze and enhance" and st.session_state.api_key:
-                if st.button("💡 Get Enhancement Recommendations", use_container_width=True):
+                if st.button("💡 Get Enhancement Recommendations", use_container_width=True, key="enhance_btn"):
                     with st.spinner("🧠 Analyzing with OpenAI GPT..."):
                         recommendations, improved_draft = suggest_enhancements_with_ai(
                             st.session_state.jmx_content,
@@ -731,6 +811,7 @@ def main():
                         st.session_state.enhancement_recommendations = recommendations
                         st.session_state.improved_jmx_draft = improved_draft
                         st.session_state.enhancements_suggested = True
+                        st.rerun()
                 
                 if st.session_state.enhancements_suggested:
                     st.success("✅ Enhancement analysis complete!")
@@ -768,7 +849,7 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("📋 View Draft", use_container_width=True):
+                if st.button("📋 View Draft", use_container_width=True, key="view_draft_btn"):
                     with st.expander("Improved JMX Draft", expanded=True):
                         st.code(st.session_state.improved_jmx_draft, language='xml')
             
@@ -818,6 +899,10 @@ def main():
         - View the script using the "View Script" button
         
         ### 4. **Run Dry Run**
+        - **Prerequisites:**
+          1. Upload a valid JMX file ✅
+          2. Enter a valid JMeter path ✅
+          3. Click "Verify Path" to confirm JMeter is accessible ✅
         - Click "Run Dry Run" to execute your script in non-GUI mode
         - The system executes: `jmeter -n -t <file.jmx> -l results.jtl -j jmeter.log`
         - Results and logs are analyzed automatically
@@ -826,11 +911,44 @@ def main():
         - **Correlation Analysis**: Identifies variables and tokens to extract
         - **Enhancement Suggestions**: Recommends optimizations and best practices
         - Uses GPT-4 Turbo for intelligent analysis
+        - Requires valid OpenAI API key
         
         ### 6. **Download Improved Script**
         - Review recommended enhancements
         - Download the AI-generated improved JMX draft
         - Manually review before using in production
+        """)
+        
+        st.divider()
+        
+        st.subheader("Troubleshooting: Run Dry Run Button Not Enabled?")
+        st.markdown("""
+        The "Run Dry Run" button requires **THREE conditions** to be enabled:
+        
+        1. **✅ JMX File Uploaded**
+           - Click in the upload area
+           - Select your `.jmx` file
+           - Verify the green "Valid JMX file" message appears
+        
+        2. **✅ JMeter Path Configured**
+           - Enter full path in "JMeter Executable Path" field
+           - Examples:
+             - Windows: `C:\\jmeter\\bin\\jmeter.bat`
+             - Linux/Mac: `/usr/bin/jmeter`
+        
+        3. **✅ JMeter Verified**
+           - Click "Verify Path" button
+           - Wait for green "✅ Valid" message
+           - Or use "Auto-Detect" button to find it automatically
+        
+        **Debug Checklist in Run Control Panel:**
+        ```
+        JMX Loaded: ✅ (must be green)
+        JMeter Ready: ✅ (must be green)
+        Path Set: ✅ (must be green)
+        ```
+        
+        If all three are green, the "Run Dry Run" button will be **enabled**.
         """)
         
         st.divider()
@@ -869,29 +987,31 @@ def main():
         st.info(f"""
         **Current JMeter Path:** `{st.session_state.jmeter_path if st.session_state.jmeter_path else 'Not configured'}`
         
-        **Status:** {'✅ Valid' if st.session_state.jmeter_found else '❌ Invalid or Not Found'}
+        **Status:** {'✅ Valid and Ready' if st.session_state.jmeter_found else '❌ Invalid or Not Found'}
         """)
         
         st.subheader("Finding JMeter Path on Your System")
         
-        with st.expander("Windows Instructions"):
+        with st.expander("🪟 Windows Instructions"):
             st.code("""
-# Open Command Prompt and run:
+# Open Command Prompt (cmd.exe) and run:
 where jmeter.bat
 
-# Or find JMeter installation:
-dir C:\\jmeter\\bin
-dir "C:\\Program Files\\Apache JMeter\\bin"
+# Example output:
+# C:\\jmeter\\bin\\jmeter.bat
+
+# Copy this path to the sidebar configuration
             """, language="bash")
         
-        with st.expander("Linux/Mac Instructions"):
+        with st.expander("🐧 Linux/Mac Instructions"):
             st.code("""
 # Open Terminal and run:
 which jmeter
 
-# Or find JMeter installation:
-find /usr -name jmeter -type f
-find /opt -name jmeter -type f
+# Example output:
+# /usr/local/bin/jmeter
+
+# Copy this path to the sidebar configuration
             """, language="bash")
         
         st.divider()
@@ -909,7 +1029,7 @@ find /opt -name jmeter -type f
         
         st.subheader("About This Application")
         st.markdown("""
-        **AI-Powered JMeter Script Enhancer v1.0**
+        **AI-Powered JMeter Script Enhancer v1.1**
         
         A professional Streamlit dashboard for analyzing and enhancing JMeter performance test scripts 
         using OpenAI's GPT models.
@@ -925,6 +1045,12 @@ find /opt -name jmeter -type f
         - QA Engineers
         - SDETs (SDET)
         - DevOps Engineers
+        
+        **v1.1 Improvements:**
+        - Fixed Run Dry Run button enable/disable logic
+        - Added debug metrics in Run Control panel
+        - Improved JMeter path validation feedback
+        - Better error messages for troubleshooting
         """)
 
 
