@@ -120,6 +120,14 @@ st.markdown("""
         color: #856404;
     }
     
+    .threadgroup-card {
+        background-color: #e8f4f8;
+        border-left: 4px solid #2ca02c;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 4px;
+    }
+    
     .enhancement-recommendation {
         background-color: white;
         border-left: 4px solid #2ca02c;
@@ -175,10 +183,11 @@ def init_session_state():
             'ramp_up_time': 60,
             'steady_state_duration': 300,
             'iterations': 1,
+            'apply_to_all': True,  # NEW: Apply to all ThreadGroups
         },
         'aggregate_report': None,
         'aggregate_report_generated': False,
-        'original_script_values': {},
+        'original_thread_groups': [],  # NEW: Store all ThreadGroups info
         'execution_command': '',
     }
     
@@ -259,65 +268,98 @@ def validate_jmx_file(content: str) -> Tuple[bool, str]:
         return False, f"Error: {str(e)}"
 
 
-def extract_original_thread_group_values(jmx_content: str) -> Dict:
-    """Extract original ThreadGroup values from JMX"""
+def extract_all_thread_groups(jmx_content: str) -> List[Dict]:
+    """Extract ALL ThreadGroup configurations from JMX"""
     try:
         root = ET.fromstring(jmx_content)
-        original_values = {
-            'num_threads': None,
-            'ramp_up_time': None,
-            'steady_state_duration': None,
-            'iterations': None,
-        }
+        thread_groups_info = []
         
+        # Find all ThreadGroup elements
         thread_groups = root.findall('.//ThreadGroup')
         
-        if thread_groups:
-            tg = thread_groups[0]
+        for idx, tg in enumerate(thread_groups):
+            tg_info = {
+                'index': idx,
+                'name': 'ThreadGroup',
+                'num_threads': None,
+                'ramp_up_time': None,
+                'steady_state_duration': None,
+                'iterations': None,
+            }
             
+            # Try to get ThreadGroup name
+            for attr in tg.attrib:
+                if 'testname' in attr.lower():
+                    tg_info['name'] = tg.attrib[attr]
+                    break
+            
+            # Extract number of threads
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
                 try:
-                    original_values['num_threads'] = int(elem.text) if elem.text else None
+                    tg_info['num_threads'] = int(elem.text) if elem.text else None
                 except:
                     pass
             
+            # Extract ramp-up time
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.ramp_time']"):
                 try:
-                    original_values['ramp_up_time'] = int(elem.text) if elem.text else None
+                    tg_info['ramp_up_time'] = int(elem.text) if elem.text else None
                 except:
                     pass
             
+            # Extract duration
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.duration']"):
                 try:
-                    original_values['steady_state_duration'] = int(elem.text) if elem.text else None
+                    tg_info['steady_state_duration'] = int(elem.text) if elem.text else None
                 except:
                     pass
             
+            # Extract loop count (iterations)
             for elem in tg.findall(".//elementProp[@name='ThreadGroup.main_controller']/stringProp[@name='LoopController.loops']"):
                 try:
                     loop_val = elem.text
                     if loop_val and loop_val.strip() != '-1':
-                        original_values['iterations'] = int(loop_val)
+                        tg_info['iterations'] = int(loop_val)
                 except:
                     pass
+            
+            thread_groups_info.append(tg_info)
         
-        return original_values
+        return thread_groups_info
     except Exception as e:
-        st.warning(f"Could not extract original values from script: {str(e)}")
-        return {}
+        st.warning(f"Could not extract ThreadGroups from script: {str(e)}")
+        return []
 
 
-def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
-    """Override ThreadGroup parameters in JMX with scenario values"""
+def modify_all_thread_groups(jmx_content: str, scenario: Dict) -> str:
+    """
+    Override ALL ThreadGroup parameters in JMX with scenario values
+    
+    Options:
+    1. Apply to ALL ThreadGroups (if apply_to_all is True)
+    2. Apply to SELECTED ThreadGroups (if apply_to_all is False and specific ones selected)
+    """
     try:
         root = ET.fromstring(jmx_content)
         thread_groups = root.findall('.//ThreadGroup')
         
         if not thread_groups:
-            st.warning("⚠️ No ThreadGroup found in JMX. Script may use unconventional structure.")
+            st.warning("⚠️ No ThreadGroup found in JMX.")
             return jmx_content
         
-        for tg in thread_groups:
+        apply_to_all = scenario.get('apply_to_all', True)
+        selected_indices = scenario.get('selected_thread_groups', list(range(len(thread_groups))))
+        
+        st.info(f"📋 Found {len(thread_groups)} ThreadGroup(s). {'Applying to ALL.' if apply_to_all else 'Applying to selected.'}")
+        
+        for tg_idx, tg in enumerate(thread_groups):
+            # Skip if not applying to all and this ThreadGroup is not selected
+            if not apply_to_all and tg_idx not in selected_indices:
+                st.info(f"⏭️ Skipping ThreadGroup {tg_idx + 1}")
+                continue
+            
+            st.info(f"✏️ Modifying ThreadGroup {tg_idx + 1}/{len(thread_groups)}")
+            
             # Override Number of Threads
             threads_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
@@ -325,7 +367,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
                 threads_modified = True
             
             if not threads_modified:
-                st.warning("⚠️ Could not find ThreadGroup.num_threads element")
+                st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find num_threads element")
             
             # Override Ramp-up Time
             rampup_modified = False
@@ -334,7 +376,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
                 rampup_modified = True
             
             if not rampup_modified:
-                st.warning("⚠️ Could not find ThreadGroup.ramp_time element")
+                st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find ramp_time element")
             
             # Override Duration
             duration_modified = False
@@ -343,7 +385,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
                 duration_modified = True
             
             if not duration_modified:
-                st.warning("⚠️ Could not find ThreadGroup.duration element")
+                st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find duration element")
             
             # Override Loop Count (Iterations)
             loop_modified = False
@@ -352,7 +394,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
                 loop_modified = True
             
             if not loop_modified:
-                st.warning("⚠️ Could not find LoopController.loops element")
+                st.warning(f"⚠️ ThreadGroup {tg_idx + 1}: Could not find loop element")
         
         return ET.tostring(root, encoding='unicode')
     
@@ -457,15 +499,11 @@ def parse_jtl_results(jtl_file: str) -> Dict:
 
 
 def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 1800) -> Tuple[bool, str, str]:
-    """
-    Execute JMeter in non-GUI mode for dry run
-    Uses standard command: jmeter -n -t <jmx_file> -l <results_file>
-    """
+    """Execute JMeter in non-GUI mode"""
     try:
         results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
         log_file = os.path.join(tempfile.gettempdir(), 'jmeter.log')
         
-        # Clean up old files
         for f in [results_file, log_file]:
             if os.path.exists(f):
                 try:
@@ -475,23 +513,17 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 180
         
         path = jmeter_executable.strip('"\'')
         
-        # STANDARD JMETER NON-GUI COMMAND
-        # jmeter -n -t <jmx_file> -l <results_file> -j <log_file>
         cmd = [
             path,
-            '-n',                    # Non-GUI mode
-            '-t', jmx_file,         # Test plan file
-            '-l', results_file,     # Results file (JTL format)
-            '-j', log_file          # Log file
+            '-n',
+            '-t', jmx_file,
+            '-l', results_file,
+            '-j', log_file
         ]
         
-        # Store command for display
         st.session_state.execution_command = ' '.join(cmd)
-        
         st.info(f"📋 Executing: `{' '.join(cmd)}`")
         
-        # Execute JMeter with NO capture to let it run in foreground
-        # This prevents timeout issues
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -499,7 +531,6 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 180
             timeout=timeout
         )
         
-        # Read log output
         log_output = ""
         if os.path.exists(log_file):
             try:
@@ -508,13 +539,10 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 180
             except Exception as e:
                 log_output = f"Error reading log: {str(e)}\n"
         
-        # Get output from stdout/stderr if log file is empty
         if not log_output:
             log_output = result.stdout if result.stdout else result.stderr
         
-        # Check if results file was created (better indicator of success)
         success = os.path.exists(results_file) and result.returncode == 0
-        
         output = log_output if log_output else "Execution completed"
         
         return success, output, results_file
@@ -820,8 +848,6 @@ def main():
             Open Terminal and run:
             which jmeter
             ```
-            
-            Then copy the path shown above into the "JMeter Executable Path" field.
             """)
         
         st.divider()
@@ -831,7 +857,7 @@ def main():
             "Enter your OpenAI API Key",
             value=st.session_state.api_key,
             type="password",
-            help="Your API key for GPT-4 analysis. Get it from https://platform.openai.com/api-keys",
+            help="Your API key for GPT-4 analysis",
             key="api_key_input"
         )
         
@@ -845,8 +871,6 @@ def main():
         if st.session_state.jmeter_path and st.session_state.jmeter_path.strip():
             if st.session_state.jmeter_found:
                 st.success(f"✅ JMeter Ready")
-                if st.session_state.jmeter_version:
-                    st.caption(st.session_state.jmeter_version)
             else:
                 st.markdown("""
                 <div class="error-message">
@@ -890,7 +914,7 @@ def main():
             st.session_state.jmx_file = None
             st.session_state.jmx_content = ''
             st.session_state.jmx_filename = ''
-            st.session_state.original_script_values = {}
+            st.session_state.original_thread_groups = []
             st.rerun()
         
         if uploaded_file is not None:
@@ -905,22 +929,24 @@ def main():
                 st.success(f"✅ {validation_msg}")
                 st.info(f"File: **{uploaded_file.name}** | Size: **{len(file_content)} bytes**")
                 
-                original_vals = extract_original_thread_group_values(file_content)
-                st.session_state.original_script_values = original_vals
+                # Extract ALL ThreadGroups
+                thread_groups = extract_all_thread_groups(file_content)
+                st.session_state.original_thread_groups = thread_groups
                 
-                if original_vals and any(v is not None for v in original_vals.values()):
-                    with st.expander("📋 Original Script Values (Click to View)", expanded=False):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if original_vals['num_threads']:
-                                st.info(f"**Threads:** {original_vals['num_threads']}")
-                            if original_vals['ramp_up_time']:
-                                st.info(f"**Ramp-up:** {original_vals['ramp_up_time']}s")
-                        with col2:
-                            if original_vals['steady_state_duration']:
-                                st.info(f"**Duration:** {original_vals['steady_state_duration']}s")
-                            if original_vals['iterations']:
-                                st.info(f"**Iterations:** {original_vals['iterations']}")
+                if thread_groups:
+                    st.success(f"✅ Found {len(thread_groups)} ThreadGroup(s)")
+                    
+                    with st.expander(f"📋 Original ThreadGroup Values ({len(thread_groups)} groups)", expanded=True):
+                        for idx, tg in enumerate(thread_groups):
+                            st.markdown(f"""
+                            <div class="threadgroup-card">
+                            <strong>ThreadGroup {idx + 1}: {tg['name']}</strong><br>
+                            Threads: {tg.get('num_threads', 'N/A')} | 
+                            Ramp-up: {tg.get('ramp_up_time', 'N/A')}s | 
+                            Duration: {tg.get('steady_state_duration', 'N/A')}s | 
+                            Iterations: {tg.get('iterations', 'N/A')}
+                            </div>
+                            """, unsafe_allow_html=True)
             else:
                 st.error(f"❌ {validation_msg}")
         
@@ -931,12 +957,40 @@ def main():
         
         st.markdown("""
         <div class="override-info">
-        <strong>ℹ️ OVERRIDE MODE ENABLED</strong><br>
-        The values you enter below will <strong>override</strong> any existing thread configuration in your JMX script.
-        The script will be modified to use only these parameters during execution.
+        <strong>ℹ️ MULTIPLE THREADGROUP HANDLING</strong><br>
+        Choose whether to apply scenario settings to ALL ThreadGroups or select specific ones.
         </div>
         """, unsafe_allow_html=True)
         
+        # Option to apply to all or specific ThreadGroups
+        apply_to_all = st.radio(
+            "Apply scenario to:",
+            options=["✅ All ThreadGroups", "🎯 Selected ThreadGroups Only"],
+            horizontal=True,
+            index=0,
+            key="apply_to_all_radio"
+        )
+        
+        st.session_state.scenario_config['apply_to_all'] = (apply_to_all == "✅ All ThreadGroups")
+        
+        # If there are multiple ThreadGroups and user selects specific ones
+        if not st.session_state.scenario_config['apply_to_all'] and st.session_state.original_thread_groups:
+            st.subheader("Select ThreadGroups to modify:")
+            selected_tgs = []
+            cols = st.columns(min(3, len(st.session_state.original_thread_groups)))
+            
+            for idx, tg in enumerate(st.session_state.original_thread_groups):
+                with cols[idx % 3]:
+                    if st.checkbox(f"{tg['name']} (Group {idx + 1})", value=True, key=f"tg_{idx}"):
+                        selected_tgs.append(idx)
+            
+            st.session_state.scenario_config['selected_thread_groups'] = selected_tgs
+        else:
+            st.session_state.scenario_config['selected_thread_groups'] = list(range(len(st.session_state.original_thread_groups)))
+        
+        st.divider()
+        
+        # Scenario parameters
         col1, col2 = st.columns(2)
         
         with col1:
@@ -951,8 +1005,7 @@ def main():
                 min_value=1,
                 max_value=1000,
                 value=st.session_state.scenario_config['num_threads'],
-                step=1,
-                help="Number of concurrent users/threads to simulate"
+                step=1
             )
             st.session_state.scenario_config['num_threads'] = num_threads
             
@@ -961,8 +1014,7 @@ def main():
                 min_value=0,
                 max_value=3600,
                 value=st.session_state.scenario_config['ramp_up_time'],
-                step=5,
-                help="Time to reach the specified number of threads"
+                step=5
             )
             st.session_state.scenario_config['ramp_up_time'] = ramp_up_time
         
@@ -978,8 +1030,7 @@ def main():
                 min_value=1,
                 max_value=3600,
                 value=st.session_state.scenario_config['steady_state_duration'],
-                step=10,
-                help="How long to maintain the load at full capacity"
+                step=10
             )
             st.session_state.scenario_config['steady_state_duration'] = steady_state_duration
             
@@ -988,11 +1039,11 @@ def main():
                 min_value=1,
                 max_value=100,
                 value=st.session_state.scenario_config['iterations'],
-                step=1,
-                help="Number of times each thread will execute the test"
+                step=1
             )
             st.session_state.scenario_config['iterations'] = iterations
         
+        # Scenario Summary
         total_requests = num_threads * iterations
         total_time = ramp_up_time + steady_state_duration
         
@@ -1040,17 +1091,16 @@ def main():
                 "🚀 Run Dry Run",
                 disabled=not can_run_dry_run,
                 use_container_width=True,
-                help="Execute JMeter with scenario parameters (overrides script values)" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Click Verify"
+                help="Execute JMeter with scenario parameters" if can_run_dry_run else "Please: 1) Upload JMX 2) Set JMeter path 3) Click Verify"
             ):
-                with st.spinner(f"🔄 Executing JMeter (Scenario: {num_threads} users, {steady_state_duration}s duration)...\n\n⏳ This may take several minutes depending on your scenario. Do NOT close this window."):
+                with st.spinner(f"🔄 Executing JMeter ({len(st.session_state.scenario_config.get('selected_thread_groups', []))} ThreadGroup(s))...\n\n⏳ This may take several minutes."):
                     # Modify JMX with scenario parameters
-                    modified_jmx = modify_jmx_with_scenario(st.session_state.jmx_content, st.session_state.scenario_config)
+                    modified_jmx = modify_all_thread_groups(st.session_state.jmx_content, st.session_state.scenario_config)
                     temp_jmx = save_temp_jmx(modified_jmx)
                     
-                    # Calculate timeout - much higher tolerance
-                    # Formula: (ramp_up + duration) * 1.5 + 5 minute buffer
+                    # Calculate timeout
                     estimated_duration = (ramp_up_time + steady_state_duration) * 1.5
-                    timeout = max(1200, int(estimated_duration) + 300)  # Minimum 20 minutes + buffer
+                    timeout = max(1200, int(estimated_duration) + 300)
                     
                     success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path, timeout=timeout)
                     
@@ -1068,7 +1118,7 @@ def main():
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'filename': st.session_state.jmx_filename,
                         'status': st.session_state.last_run_status,
-                        'summary': f"Execution completed ({num_threads} users, {total_requests} requests)"
+                        'summary': f"Executed ({num_threads} users, {len(st.session_state.scenario_config.get('selected_thread_groups', []))} ThreadGroup(s))"
                     }
                     st.session_state.run_history.append(history_entry)
                     
@@ -1313,75 +1363,80 @@ def main():
     with tab2:  # DOCUMENTATION
         st.header("📚 User Guide & Documentation")
         
-        st.subheader("🎯 Standard JMeter Non-GUI Command")
+        st.subheader("🎯 Handling Multiple ThreadGroups")
         st.markdown("""
-        The application uses the standard JMeter non-GUI command:
+        ### **What are ThreadGroups?**
+        ThreadGroups define how users are simulated in your test:
+        - Number of threads (concurrent users)
+        - Ramp-up time (how quickly to reach full load)
+        - Duration (how long to maintain load)
+        - Iterations (how many times to execute)
         
-        ```bash
-        jmeter -n -t <jmx_file> -l <results_file> -j <log_file>
+        ### **Multiple ThreadGroup Scenarios**
+        
+        **Scenario 1: Sequential ThreadGroups**
+        ```
+        ThreadGroup 1: 10 users, 60s ramp-up, 300s duration
+        ThreadGroup 2: 5 users, 30s ramp-up, 600s duration
+        ThreadGroup 3: 20 users, 120s ramp-up, 900s duration
         ```
         
-        **Parameters:**
-        - `-n`: Non-GUI mode
-        - `-t`: Test plan file (JMX)
-        - `-l`: Results file (JTL format) - stores response data
-        - `-j`: Log file - stores execution logs
+        **Handling Options:**
         
-        This is the recommended way to run JMeter for CI/CD and automation.
+        1. **Apply to ALL ThreadGroups** ✅ 
+           - All ThreadGroups use your scenario settings
+           - Simplifies management
+           - Good for uniform load testing
+           
+        2. **Apply to SELECTED ThreadGroups** 🎯
+           - Choose which ThreadGroups to modify
+           - Others keep original settings
+           - Good for mixed load scenarios
+        
+        ### **Example Workflow**
+        
+        **Script has 3 ThreadGroups:**
+        - ThreadGroup 1: "Login Users" (5 users)
+        - ThreadGroup 2: "Browse Users" (10 users)
+        - ThreadGroup 3: "Purchase Users" (3 users)
+        
+        **Your Scenario:**
+        - 20 users, 90s ramp-up, 600s duration, 2 iterations
+        
+        **Option A: Apply to ALL**
+        - All 3 groups → 20 users each, 90s ramp-up, 600s duration, 2 iterations
+        - Total: 60 users
+        
+        **Option B: Apply to SELECTED (Groups 1 & 2 only)**
+        - Group 1 → 20 users (modified)
+        - Group 2 → 20 users (modified)
+        - Group 3 → 3 users (original)
+        - Total: 43 users
+        
+        ### **Best Practices**
+        
+        ✅ **Use Apply to ALL when:**
+        - Simple load test scenarios
+        - All ThreadGroups serve same purpose
+        - Want consistent user behavior
+        
+        ✅ **Use Apply to SELECTED when:**
+        - Complex multi-user scenarios
+        - Different user types (buyers, browsers, admins)
+        - Want fine-grained control
         """)
         
         st.divider()
         
-        st.subheader("🎯 Complete Workflow Guide")
+        st.subheader("Complete Workflow")
         st.markdown("""
-        ### **Step 1: Configure JMeter Path**
-        - Sidebar → Enter JMeter executable path
-        - Click "Verify" to confirm installation
-        
-        ### **Step 2: Upload JMX Script**
-        - Upload your JMeter test plan file (`.jmx`)
-        - System shows original script values
-        - Verify the green "Valid JMX file" message
-        
-        ### **Step 3: Design Test Scenario (OVERRIDE MODE)**
-        - **Number of Users/Threads**: 1-1000 concurrent users
-        - **Ramp-up Time**: 0-3600 seconds to reach full load
-        - **Steady State Duration**: 1-3600 seconds at full load
-        - **Iterations Per Thread**: 1-100 repetitions per user
-        
-        ### **Step 4: Run Dry Run**
-        - Click "🚀 Run Dry Run"
-        - System executes: `jmeter -n -t <file> -l results.jtl -j jmeter.log`
-        - Timeout automatically calculated based on scenario
-        
-        ### **Step 5: View Results**
-        - Aggregate Report with statistics
-        - Download as CSV or JSON
-        
-        ### **Step 6: AI Analysis (Optional)**
-        - Correlation suggestions
-        - Enhancement recommendations
-        """)
-        
-        st.divider()
-        
-        st.subheader("⏱️ Timeout Handling")
-        st.markdown("""
-        The timeout is **automatically calculated** based on your scenario:
-        
-        **Formula:**
-        ```
-        timeout = max(1200, (ramp_up + steady_state) * 1.5 + 300)
-        ```
-        
-        - Minimum: 20 minutes
-        - Plus buffer for overhead
-        
-        **If you still get timeout:**
-        1. Reduce steady state duration
-        2. Reduce number of threads
-        3. Reduce iterations
-        4. Simplify test plan
+        1. Upload JMX with multiple ThreadGroups
+        2. Review detected ThreadGroups
+        3. Choose: Apply to ALL or SELECT specific ones
+        4. Set scenario parameters (threads, ramp-up, duration, iterations)
+        5. Click "Run Dry Run"
+        6. Review Aggregate Report
+        7. Download results (CSV/JSON)
         """)
     
     with tab3:  # SETTINGS
@@ -1391,6 +1446,7 @@ def main():
         st.json({
             "jmeter_path": st.session_state.jmeter_path or "Not configured",
             "jmeter_status": "Ready" if st.session_state.jmeter_found else "Not verified",
+            "threadgroups_detected": len(st.session_state.original_thread_groups),
             "scenario_config": st.session_state.scenario_config
         })
         
@@ -1398,18 +1454,20 @@ def main():
         
         st.subheader("About This Application")
         st.markdown("""
-        **AI-Powered JMeter Script Enhancer v2.1**
+        **AI-Powered JMeter Script Enhancer v2.2**
         
         Professional Streamlit dashboard for load testing script analysis.
         
-        **Features:**
+        **v2.2 Features:**
+        - ✅ Multiple ThreadGroup detection & handling
+        - ✅ Apply to ALL or SELECT ThreadGroups
+        - ✅ Detailed ThreadGroup information display
         - ✅ Standard JMeter non-GUI command execution
         - ✅ Scenario design with parameter override
-        - ✅ Aggregate report generation from JTL
+        - ✅ Aggregate report generation
         - ✅ CSV/JSON export
         - ✅ AI correlation analysis
         - ✅ AI enhancement recommendations
-        - ✅ Automatic timeout calculation
         
         **Built with:**
         - 🐍 Python & Streamlit
