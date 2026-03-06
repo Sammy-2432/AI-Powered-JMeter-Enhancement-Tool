@@ -103,12 +103,21 @@ st.markdown("""
         font-weight: 600;
     }
     
-    .summary-box {
-        background-color: white;
+    .scenario-config {
+        background-color: #e8f4f8;
         border-left: 4px solid #1f77b4;
         padding: 1rem;
         margin: 0.5rem 0;
         border-radius: 4px;
+    }
+    
+    .override-info {
+        background-color: #fff3cd;
+        border-left: 4px solid #ff7f0e;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 4px;
+        color: #856404;
     }
     
     .enhancement-recommendation {
@@ -134,38 +143,6 @@ st.markdown("""
         margin: 0.5rem 0;
         border-radius: 4px;
         color: #d62728;
-    }
-    
-    .scenario-config {
-        background-color: #e8f4f8;
-        border-left: 4px solid #1f77b4;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-radius: 4px;
-    }
-    
-    .override-info {
-        background-color: #fff3cd;
-        border-left: 4px solid #ff7f0e;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-radius: 4px;
-        color: #856404;
-    }
-    
-    .report-metrics {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 1rem;
-        margin: 1rem 0;
-    }
-    
-    .metric-card {
-        background: white;
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        padding: 1rem;
-        text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -193,7 +170,6 @@ def init_session_state():
         'enhancements_suggested': False,
         'enhancement_recommendations': [],
         'improved_jmx_draft': '',
-        # Scenario design state
         'scenario_config': {
             'num_threads': 10,
             'ramp_up_time': 60,
@@ -218,18 +194,16 @@ init_session_state()
 # ============================================================================
 
 def check_jmeter_file_exists(jmeter_executable: str) -> Tuple[bool, str]:
-    """Check if JMeter executable file exists (fast check without running it)"""
+    """Check if JMeter executable file exists"""
     try:
         if not jmeter_executable or jmeter_executable.strip() == '':
             return False, "No JMeter path specified"
         
-        # Remove quotes if present
         path = jmeter_executable.strip('"\'')
         
         if os.path.isfile(path):
             return True, f"File found at: {path}"
         else:
-            # Try with .bat on Windows if not present
             if not path.endswith('.bat') and os.path.isfile(path + '.bat'):
                 return True, f"File found at: {path}.bat"
             
@@ -241,19 +215,15 @@ def check_jmeter_file_exists(jmeter_executable: str) -> Tuple[bool, str]:
 def check_jmeter_installed(jmeter_executable: str = 'jmeter', timeout: int = 20) -> Tuple[bool, str]:
     """Check if JMeter is installed and accessible"""
     try:
-        # Ensure executable path is provided
         if not jmeter_executable or jmeter_executable.strip() == '':
             return False, "No JMeter path specified"
         
-        # Remove quotes if present
         path = jmeter_executable.strip('"\'')
         
-        # First check if file exists (fast)
         file_exists, file_msg = check_jmeter_file_exists(path)
         if not file_exists:
             return False, file_msg
         
-        # Try running version command with increased timeout
         try:
             result = subprocess.run(
                 [path, '--version'], 
@@ -299,34 +269,29 @@ def extract_original_thread_group_values(jmx_content: str) -> Dict:
             'iterations': None,
         }
         
-        # Find all ThreadGroup elements
         thread_groups = root.findall('.//ThreadGroup')
         
         if thread_groups:
-            tg = thread_groups[0]  # Get first ThreadGroup
+            tg = thread_groups[0]
             
-            # Extract number of threads
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
                 try:
                     original_values['num_threads'] = int(elem.text) if elem.text else None
                 except:
                     pass
             
-            # Extract ramp-up time
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.ramp_time']"):
                 try:
                     original_values['ramp_up_time'] = int(elem.text) if elem.text else None
                 except:
                     pass
             
-            # Extract duration
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.duration']"):
                 try:
                     original_values['steady_state_duration'] = int(elem.text) if elem.text else None
                 except:
                     pass
             
-            # Extract loop count (iterations)
             for elem in tg.findall(".//elementProp[@name='ThreadGroup.main_controller']/stringProp[@name='LoopController.loops']"):
                 try:
                     loop_val = elem.text
@@ -342,28 +307,17 @@ def extract_original_thread_group_values(jmx_content: str) -> Dict:
 
 
 def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
-    """
-    Override ThreadGroup parameters in JMX with scenario values
-    
-    This function modifies:
-    - ThreadGroup.num_threads (number of users/threads)
-    - ThreadGroup.ramp_time (ramp-up time)
-    - ThreadGroup.duration (steady state duration)
-    - LoopController.loops (iterations)
-    """
+    """Override ThreadGroup parameters in JMX with scenario values"""
     try:
         root = ET.fromstring(jmx_content)
-        
-        # Find all ThreadGroup elements
         thread_groups = root.findall('.//ThreadGroup')
         
         if not thread_groups:
             st.warning("⚠️ No ThreadGroup found in JMX. Script may use unconventional structure.")
             return jmx_content
         
-        # Modify each ThreadGroup found
         for tg in thread_groups:
-            # ========== Override Number of Threads ==========
+            # Override Number of Threads
             threads_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
                 elem.text = str(scenario['num_threads'])
@@ -372,7 +326,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
             if not threads_modified:
                 st.warning("⚠️ Could not find ThreadGroup.num_threads element")
             
-            # ========== Override Ramp-up Time ==========
+            # Override Ramp-up Time
             rampup_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.ramp_time']"):
                 elem.text = str(scenario['ramp_up_time'])
@@ -381,7 +335,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
             if not rampup_modified:
                 st.warning("⚠️ Could not find ThreadGroup.ramp_time element")
             
-            # ========== Override Duration ==========
+            # Override Duration
             duration_modified = False
             for elem in tg.findall(".//stringProp[@name='ThreadGroup.duration']"):
                 elem.text = str(scenario['steady_state_duration'])
@@ -390,7 +344,7 @@ def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
             if not duration_modified:
                 st.warning("⚠️ Could not find ThreadGroup.duration element")
             
-            # ========== Override Loop Count (Iterations) ==========
+            # Override Loop Count (Iterations)
             loop_modified = False
             for elem in tg.findall(".//elementProp[@name='ThreadGroup.main_controller']/stringProp[@name='LoopController.loops']"):
                 elem.text = str(scenario['iterations'])
@@ -417,7 +371,6 @@ def parse_jmeter_output(log_content: str) -> Dict:
         'average_response_time': 0,
     }
     
-    # Parse for common error patterns
     error_patterns = [
         r'ERROR -.*',
         r'WARN -.*',
@@ -459,7 +412,6 @@ def parse_jtl_results(jtl_file: str) -> Dict:
         if not rows:
             return None
         
-        # Parse response times
         response_times = []
         success_count = 0
         failure_count = 0
@@ -480,7 +432,6 @@ def parse_jtl_results(jtl_file: str) -> Dict:
         if not response_times:
             return None
         
-        # Calculate statistics
         response_times.sort()
         report = {
             'total_samples': len(rows),
@@ -510,7 +461,6 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900
         results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
         log_file = os.path.join(tempfile.gettempdir(), 'jmeter.log')
         
-        # Clean up old files
         for f in [results_file, log_file]:
             if os.path.exists(f):
                 try:
@@ -518,10 +468,8 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900
                 except:
                     pass
         
-        # Remove quotes if present
         path = jmeter_executable.strip('"\'')
         
-        # Execute JMeter command
         cmd = [
             path,
             '-n',
@@ -533,7 +481,6 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         
-        # Read log output
         log_output = ""
         if os.path.exists(log_file):
             try:
@@ -542,7 +489,6 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900
             except Exception as e:
                 log_output = f"Error reading log: {str(e)}\n"
         
-        # Get output from stdout/stderr if log file is empty
         if not log_output:
             log_output = result.stdout if result.stdout else result.stderr
         
@@ -730,11 +676,9 @@ def generate_aggregate_report_csv(report: Dict) -> str:
     output = StringIO()
     writer = csv.writer(output)
     
-    # Header
     writer.writerow(['JMeter Aggregate Report', report['timestamp']])
     writer.writerow([])
     
-    # Metrics
     writer.writerow(['Metric', 'Value'])
     writer.writerow(['Total Samples', report['total_samples']])
     writer.writerow(['Successful', report['success_count']])
@@ -772,7 +716,6 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # JMeter Path Configuration
         st.subheader("JMeter Configuration")
         st.info("""
         ℹ️ **No Permission to Change Environment Variables?**
@@ -788,11 +731,9 @@ def main():
             key="jmeter_path_input"
         )
         
-        # Update session state if path changed
         if jmeter_path.strip() != st.session_state.jmeter_path.strip():
             st.session_state.jmeter_path = jmeter_path.strip()
         
-        # Verification buttons
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -844,7 +785,6 @@ def main():
         
         st.divider()
         
-        # Quick Path Finder Helper
         with st.expander("🔎 Help Finding JMeter Path"):
             st.markdown("""
             **Windows:**
@@ -864,7 +804,6 @@ def main():
         
         st.divider()
         
-        # API Key Input
         st.subheader("OpenAI API Configuration")
         api_key = st.text_input(
             "Enter your OpenAI API Key",
@@ -879,7 +818,6 @@ def main():
         
         st.divider()
         
-        # System Status
         st.subheader("System Status")
         
         if st.session_state.jmeter_path and st.session_state.jmeter_path.strip():
@@ -900,7 +838,6 @@ def main():
         
         st.divider()
         
-        # Execution History
         st.subheader("📋 Execution History")
         st.markdown(format_execution_history(st.session_state.run_history))
     
@@ -940,18 +877,15 @@ def main():
             st.session_state.jmx_filename = uploaded_file.name
             st.session_state.jmx_content = file_content
             
-            # Validation
             is_valid, validation_msg = validate_jmx_file(file_content)
             
             if is_valid:
                 st.success(f"✅ {validation_msg}")
                 st.info(f"File: **{uploaded_file.name}** | Size: **{len(file_content)} bytes**")
                 
-                # Extract original values from script
                 original_vals = extract_original_thread_group_values(file_content)
                 st.session_state.original_script_values = original_vals
                 
-                # Show original values if found
                 if original_vals and any(v is not None for v in original_vals.values()):
                     with st.expander("📋 Original Script Values (Click to View)", expanded=False):
                         col1, col2 = st.columns(2)
@@ -1037,7 +971,6 @@ def main():
             )
             st.session_state.scenario_config['iterations'] = iterations
         
-        # Scenario Summary
         total_requests = num_threads * iterations
         total_time = ramp_up_time + steady_state_duration
         
@@ -1062,7 +995,6 @@ def main():
         # ==================== RUN CONTROL PANEL ====================
         st.markdown('<div class="panel"><div class="panel-title">▶️ Run Control</div>', unsafe_allow_html=True)
         
-        # Debug information
         debug_col1, debug_col2, debug_col3 = st.columns(3)
         with debug_col1:
             st.metric("JMX Loaded", "✅" if st.session_state.jmx_content else "❌")
@@ -1075,7 +1007,6 @@ def main():
         
         col1, col2, col3 = st.columns(3)
         
-        # Determine if button should be disabled
         can_run_dry_run = (
             bool(st.session_state.jmx_content and st.session_state.jmx_content.strip()) and
             bool(st.session_state.jmeter_path and st.session_state.jmeter_path.strip()) and
@@ -1090,11 +1021,9 @@ def main():
                 help="Execute JMeter with scenario parameters (overrides script values)" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Click Verify"
             ):
                 with st.spinner(f"🔄 Executing JMeter (Scenario: {num_threads} users, {steady_state_duration}s duration)...\n\n⏳ This may take several minutes depending on your scenario."):
-                    # Modify JMX with scenario parameters (OVERRIDE)
                     modified_jmx = modify_jmx_with_scenario(st.session_state.jmx_content, st.session_state.scenario_config)
                     temp_jmx = save_temp_jmx(modified_jmx)
                     
-                    # Calculate timeout based on scenario
                     estimated_duration = (ramp_up_time + steady_state_duration) * 1.5
                     timeout = max(600, int(estimated_duration) + 120)
                     
@@ -1104,14 +1033,12 @@ def main():
                     st.session_state.last_run_status = "success" if success else "failed"
                     st.session_state.dry_run_executed = True
                     
-                    # Parse aggregate report from JTL results
                     if success and results_file:
                         aggregate_report = parse_jtl_results(results_file)
                         if aggregate_report:
                             st.session_state.aggregate_report = aggregate_report
                             st.session_state.aggregate_report_generated = True
                     
-                    # Add to history
                     history_entry = {
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'filename': st.session_state.jmx_filename,
@@ -1120,7 +1047,6 @@ def main():
                     }
                     st.session_state.run_history.append(history_entry)
                     
-                    # Clean up
                     try:
                         os.remove(temp_jmx)
                     except:
@@ -1163,7 +1089,6 @@ def main():
             
             report = st.session_state.aggregate_report
             
-            # Status indicator
             if st.session_state.last_run_status == "success":
                 st.markdown(
                     '<p class="status-success">✅ TEST EXECUTION SUCCESSFUL</p>',
@@ -1178,7 +1103,6 @@ def main():
             st.caption(f"Report Generated: {report['timestamp']}")
             st.divider()
             
-            # Key metrics
             metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
             with metric_col1:
                 st.metric("Total Samples", report['total_samples'])
@@ -1191,7 +1115,6 @@ def main():
             
             st.divider()
             
-            # Detailed metrics
             col1, col2 = st.columns(2)
             
             with col1:
@@ -1207,7 +1130,6 @@ def main():
             
             st.divider()
             
-            # Percentile metrics
             st.subheader("Response Time Percentiles (ms)")
             perc_col1, perc_col2, perc_col3 = st.columns(3)
             
@@ -1220,7 +1142,6 @@ def main():
             
             st.divider()
             
-            # Download report
             col1, col2 = st.columns(2)
             
             with col1:
@@ -1234,7 +1155,6 @@ def main():
                 )
             
             with col2:
-                # JSON export
                 json_report = json.dumps(report, indent=2, default=str)
                 st.download_button(
                     label="📥 Download Report (JSON)",
@@ -1365,7 +1285,7 @@ def main():
     with tab2:  # DOCUMENTATION
         st.header("📚 User Guide & Documentation")
         
-        st.subheader("Complete Workflow Guide")
+        st.subheader("🎯 Complete Workflow Guide")
         st.markdown("""
         ### **Step 1: Configure JMeter Path**
         - Sidebar → Enter JMeter executable path
@@ -1373,127 +1293,105 @@ def main():
         
         ### **Step 2: Upload JMX Script**
         - Upload your JMeter test plan file (`.jmx`)
+        - System shows original script values (threads, ramp-up, duration, iterations)
         - Verify the green "Valid JMX file" message
-        - **Original Script Values** will be displayed (if found)
         
         ### **Step 3: Design Test Scenario (OVERRIDE MODE)**
-        - **Number of Users/Threads**: Concurrent load (1-1000)
-        - **Ramp-up Time**: How quickly to reach full load (0-3600 seconds)
-        - **Steady State Duration**: How long to maintain the load (1-3600 seconds)
-        - **Iterations Per Thread**: Repetitions per user (1-100)
+        The values you enter here will **OVERRIDE** existing thread group config:
         
-        ⚠️ **IMPORTANT**: The values you enter here will **OVERRIDE** any existing thread group configuration in your JMX script!
-        
-        **Scenario Example:**
-        - 10 users, 60s ramp-up, 300s steady state, 5 iterations
-        - Total: 50 requests over 6 minutes
+        - **Number of Users/Threads**: 1-1000 concurrent users
+        - **Ramp-up Time**: 0-3600 seconds to reach full load
+        - **Steady State Duration**: 1-3600 seconds at full load
+        - **Iterations Per Thread**: 1-100 repetitions per user
         
         ### **Step 4: Run Dry Run**
-        - Click "🚀 Run Dry Run" button
-        - System will:
-          1. Extract original script values (for reference)
-          2. **Override** script parameters with your scenario values
-          3. Execute JMeter in non-GUI mode
-          4. Generate results file (JTL)
-          5. Parse and display aggregate report
+        Click "🚀 Run Dry Run" to:
+        1. Override JMX parameters with your scenario
+        2. Execute JMeter in non-GUI mode
+        3. Generate results file (JTL format)
+        4. Parse and display Aggregate Report
         
-        **⏱️ Wait Time:**
-        - Based on your scenario duration
-        - E.g., 5 min scenario = ~6-8 min total execution
-        
-        ### **Step 5: Review Aggregate Report**
-        - View key metrics (success rate, response times, percentiles)
-        - Download as CSV or JSON
-        
+        ### **Step 5: View Aggregate Report**
+        Download performance metrics as CSV or JSON:
+        - Total Samples & Success Rate
+        - Response Time Statistics (Min/Max/Avg/Median)
+        - Percentiles (P90/P95/P99)
+        - Throughput
+
         ### **Step 6: AI Analysis (Optional)**
-        - Click "Analyze for Correlations" to find dynamic variables
-        - Click "Get Enhancement Recommendations" for improvements
+        - Analyze for Correlations
+        - Get Enhancement Recommendations
         - Download improved JMX draft
-        
-        ---
-        
-        ### **How Override Works**
-        
-        **Original Script:**
-        ```xml
-        <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup">
-          <stringProp name="ThreadGroup.num_threads">5</stringProp>
-          <stringProp name="ThreadGroup.ramp_time">30</stringProp>
-          <stringProp name="ThreadGroup.duration">600</stringProp>
-          <elementProp name="LoopController.loops">1</elementProp>
-        </ThreadGroup>
-        ```
-        
-        **After Override (with your scenario):**
-        ```xml
-        <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup">
-          <stringProp name="ThreadGroup.num_threads">20</stringProp>  <!-- CHANGED -->
-          <stringProp name="ThreadGroup.ramp_time">120</stringProp>   <!-- CHANGED -->
-          <stringProp name="ThreadGroup.duration">900</stringProp>    <!-- CHANGED -->
-          <elementProp name="LoopController.loops">3</elementProp>    <!-- CHANGED -->
-        </ThreadGroup>
-        ```
-        
-        The system automatically:
-        - ✅ Finds all ThreadGroup elements
-        - ✅ Locates the ThreadGroup.num_threads property
-        - ✅ Replaces it with your value
-        - ✅ Repeats for all parameters
-        - ✅ Preserves the rest of the script
-        
-        ---
-        
-        ### **Scenario Parameter Guide**
-        
-        | Parameter | Range | Default | Purpose |
-        |-----------|-------|---------|---------|
-        | Number of Threads | 1-1000 | 10 | Concurrent users |
-        | Ramp-up Time | 0-3600s | 60s | Time to reach full load |
-        | Steady State | 1-3600s | 300s | Duration at full load |
-        | Iterations | 1-100 | 1 | Per-thread repetitions |
-        
-        **Quick Presets:**
-        - **Smoke Test**: 2 users, 5s ramp-up, 30s steady, 1 iteration
-        - **Load Test**: 50 users, 120s ramp-up, 600s steady, 2 iterations
-        - **Stress Test**: 100 users, 30s ramp-up, 600s steady, 1 iteration
-        - **Soak Test**: 20 users, 60s ramp-up, 3600s steady, 1 iteration
         """)
         
         st.divider()
         
-        st.subheader("Aggregate Report Metrics Explained")
+        st.subheader("📊 Understanding Override Mode")
         st.markdown("""
-        - **Total Samples**: Total number of requests executed
-        - **Success Rate**: % of successful requests
-        - **Avg Response Time**: Average time to get response
-        - **Throughput**: Requests processed per second
-        - **Min/Max**: Fastest/slowest request
-        - **Percentiles (P90/P95/P99)**: Response time thresholds
-          - P90: 90% of requests complete within this time
-          - P95: 95% of requests complete within this time
-          - P99: 99% of requests complete within this time
+        **Original Script Example:**
+        - Threads: 5
+        - Ramp-up: 30s
+        - Duration: 600s
+        - Iterations: 1
+        
+        **Your Scenario Configuration:**
+        - Threads: 20
+        - Ramp-up: 120s
+        - Duration: 900s
+        - Iterations: 3
+        
+        **Result After Override:**
+        The script runs with YOUR values, ignoring originals.
+        Total requests = 20 users × 3 iterations = 60 requests
         """)
         
         st.divider()
         
-        st.subheader("Troubleshooting")
+        st.subheader("📈 Aggregate Report Metrics")
         st.markdown("""
-        ### **"Script values not overridden"**
-        - **Cause**: Script uses non-standard ThreadGroup naming
-        - **Solution**: Check that your script has standard JMeter ThreadGroup elements
-        - **Workaround**: Warnings will appear if elements cannot be found
+        - **Total Samples**: Total requests executed
+        - **Success Rate**: % of passed requests
+        - **Response Times**: Min, Max, Average, Median
+        - **Percentiles**: P90, P95, P99 (response time thresholds)
+        - **Throughput**: Requests per second
+        """)
+    
+    with tab3:  # SETTINGS
+        st.header("⚙️ Settings & Preferences")
         
-        ### **"JMeter execution timed out" error**
-        - **Cause**: Test duration exceeds timeout window
-        - **Solution**: 
-          - Reduce scenario duration (ramp-up + steady state)
-          - Reduce number of threads
-          - Reduce iterations per thread
+        st.subheader("Current Configuration")
+        st.json({
+            "jmeter_path": st.session_state.jmeter_path or "Not configured",
+            "jmeter_status": "Ready" if st.session_state.jmeter_found else "Not verified",
+            "scenario_config": st.session_state.scenario_config
+        })
         
-        ### **Run Dry Run button disabled**
-        - Check: JMX Loaded ✅
-        - Check: JMeter Ready ✅
-        - Check: Path Set ✅
+        st.divider()
         
-        ### **No aggregate report generated**
-        -
+        st.subheader("About This Application")
+        st.markdown("""
+        **AI-Powered JMeter Script Enhancer v2.0**
+        
+        Professional Streamlit dashboard for load testing script analysis.
+        
+        **Features:**
+        - ✅ Scenario design with parameter override
+        - ✅ Aggregate report generation from JTL
+        - ✅ CSV/JSON export
+        - ✅ AI correlation analysis
+        - ✅ AI enhancement recommendations
+        - ✅ Improved timeout handling
+        
+        **Built with:**
+        - 🐍 Python & Streamlit
+        - 🤖 OpenAI GPT-4 Turbo
+        - 📊 JMeter
+        """)
+
+
+# ============================================================================
+# APP ENTRY POINT
+# ============================================================================
+
+if __name__ == "__main__":
+    main()
