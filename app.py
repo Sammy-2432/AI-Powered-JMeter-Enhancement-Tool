@@ -1,4 +1,3 @@
-# AI-Powered JMeter Enhancement Tool
 import streamlit as st
 import os
 import json
@@ -136,6 +135,8 @@ st.markdown("""
 def init_session_state():
     """Initialize all session state variables"""
     defaults = {
+        'jmeter_path': '',
+        'jmeter_found': False,
         'jmx_file': None,
         'jmx_filename': '',
         'jmx_content': '',
@@ -162,13 +163,13 @@ init_session_state()
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def check_jmeter_installed() -> Tuple[bool, str]:
+def check_jmeter_installed(jmeter_executable: str = 'jmeter') -> Tuple[bool, str]:
     """Check if JMeter is installed and accessible"""
     try:
-        result = subprocess.run(['jmeter', '--version'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([jmeter_executable, '--version'], capture_output=True, text=True, timeout=5)
         return result.returncode == 0, result.stdout.strip()
     except FileNotFoundError:
-        return False, "JMeter not found in PATH"
+        return False, "JMeter executable not found at specified path"
     except Exception as e:
         return False, f"Error: {str(e)}"
 
@@ -224,7 +225,7 @@ def save_temp_jmx(content: str) -> str:
     return temp_file
 
 
-def run_jmeter_dry_run(jmx_file: str) -> Tuple[bool, str, str]:
+def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str) -> Tuple[bool, str, str]:
     """Execute JMeter in non-GUI mode for dry run"""
     try:
         results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
@@ -237,7 +238,7 @@ def run_jmeter_dry_run(jmx_file: str) -> Tuple[bool, str, str]:
         
         # Execute JMeter command
         cmd = [
-            'jmeter',
+            jmeter_executable,
             '-n',
             '-t', jmx_file,
             '-l', results_file,
@@ -450,6 +451,50 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
+        # JMeter Path Configuration
+        st.subheader("JMeter Configuration")
+        st.info("""
+        ℹ️ **No Permission to Change Environment Variables?**
+        
+        No problem! Specify the full path to your JMeter executable below.
+        """)
+        
+        jmeter_path = st.text_input(
+            "JMeter Executable Path",
+            value=st.session_state.jmeter_path,
+            placeholder="e.g., C:\\jmeter\\bin\\jmeter.bat or /usr/bin/jmeter",
+            help="Full path to jmeter executable (with filename). Use .bat on Windows, no extension on Linux/Mac"
+        )
+        
+        if jmeter_path != st.session_state.jmeter_path:
+            st.session_state.jmeter_path = jmeter_path
+        
+        # Auto-detect button
+        if st.button("🔍 Auto-Detect JMeter", use_container_width=True):
+            # Try common paths
+            common_paths = [
+                'jmeter',
+                'jmeter.bat',
+                '/usr/bin/jmeter',
+                '/usr/local/bin/jmeter',
+                'C:\\jmeter\\bin\\jmeter.bat',
+                'C:\\Program Files\\jmeter\\bin\\jmeter.bat',
+            ]
+            
+            found = False
+            for path in common_paths:
+                is_valid, version = check_jmeter_installed(path)
+                if is_valid:
+                    st.session_state.jmeter_path = path
+                    st.success(f"✅ Found JMeter: {path}\n{version}")
+                    found = True
+                    break
+            
+            if not found:
+                st.warning("❌ Could not auto-detect JMeter. Please provide the full path manually.")
+        
+        st.divider()
+        
         # API Key Input
         st.subheader("OpenAI API Configuration")
         api_key = st.text_input(
@@ -466,12 +511,18 @@ def main():
         
         # System Status
         st.subheader("System Status")
-        jmeter_installed, jmeter_version = check_jmeter_installed()
         
-        if jmeter_installed:
-            st.success(f"✅ JMeter Installed\n{jmeter_version}")
+        if st.session_state.jmeter_path:
+            jmeter_installed, jmeter_version = check_jmeter_installed(st.session_state.jmeter_path)
+            st.session_state.jmeter_found = jmeter_installed
+            
+            if jmeter_installed:
+                st.success(f"✅ JMeter Available\n{jmeter_version}")
+            else:
+                st.error(f"❌ Path Invalid\n{jmeter_version}")
         else:
-            st.error(f"❌ JMeter Not Found\n{jmeter_version}")
+            st.warning("⚠️ Please configure JMeter path above")
+            st.session_state.jmeter_found = False
         
         st.divider()
         
@@ -533,7 +584,7 @@ def main():
         with col1:
             run_button = st.button(
                 "🚀 Run Dry Run",
-                disabled=not (st.session_state.jmx_content and jmeter_installed),
+                disabled=not (st.session_state.jmx_content and st.session_state.jmeter_found),
                 use_container_width=True,
                 help="Execute JMeter in non-GUI mode"
             )
@@ -570,7 +621,7 @@ def main():
             
             with st.spinner("🔄 Executing JMeter dry run..."):
                 temp_jmx = save_temp_jmx(st.session_state.jmx_content)
-                success, output, results_file = run_jmeter_dry_run(temp_jmx)
+                success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path)
                 
                 st.session_state.last_run_output = output
                 st.session_state.last_run_status = "success" if success else "failed"
@@ -738,26 +789,45 @@ def main():
         st.subheader("Getting Started")
         st.markdown("""
         ### 1. **Setup & Configuration**
-        - Ensure JMeter is installed and available in your system PATH
+        - JMeter must be installed on your system
         - Obtain an OpenAI API key from [platform.openai.com](https://platform.openai.com/api-keys)
-        - Enter your API key in the sidebar configuration
+        - Enter your JMeter path and API key in the sidebar configuration
         
-        ### 2. **Upload Your JMeter Script**
+        ### 2. **Configuring JMeter Path (Without System PATH Access)**
+        
+        #### Windows
+        ```
+        C:\\jmeter\\bin\\jmeter.bat
+        C:\\Program Files\\Apache JMeter\\bin\\jmeter.bat
+        ```
+        
+        #### Linux/Mac
+        ```
+        /usr/bin/jmeter
+        /usr/local/bin/jmeter
+        /opt/jmeter/bin/jmeter
+        ```
+        
+        #### If you don't know the path:
+        - **Windows**: Open Command Prompt, type `where jmeter.bat`
+        - **Linux/Mac**: Open Terminal, type `which jmeter`
+        
+        ### 3. **Upload Your JMeter Script**
         - Click the upload area to select your `.jmx` file
         - The system will validate the XML structure
         - View the script using the "View Script" button
         
-        ### 3. **Run Dry Run**
+        ### 4. **Run Dry Run**
         - Click "Run Dry Run" to execute your script in non-GUI mode
         - The system executes: `jmeter -n -t <file.jmx> -l results.jtl -j jmeter.log`
         - Results and logs are analyzed automatically
         
-        ### 4. **AI-Powered Analysis**
+        ### 5. **AI-Powered Analysis**
         - **Correlation Analysis**: Identifies variables and tokens to extract
         - **Enhancement Suggestions**: Recommends optimizations and best practices
         - Uses GPT-4 Turbo for intelligent analysis
         
-        ### 5. **Download Improved Script**
+        ### 6. **Download Improved Script**
         - Review recommended enhancements
         - Download the AI-generated improved JMX draft
         - Manually review before using in production
@@ -795,16 +865,34 @@ def main():
     with tab3:  # SETTINGS
         st.header("⚙️ Settings & Preferences")
         
-        st.subheader("JMeter Configuration")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.info("📍 JMeter Path Detection")
-        with col2:
-            jmeter_ok, jmeter_info = check_jmeter_installed()
-            if jmeter_ok:
-                st.success(f"✅ {jmeter_info}")
-            else:
-                st.error(f"❌ {jmeter_info}")
+        st.subheader("JMeter Path Configuration")
+        st.info(f"""
+        **Current JMeter Path:** `{st.session_state.jmeter_path if st.session_state.jmeter_path else 'Not configured'}`
+        
+        **Status:** {'✅ Valid' if st.session_state.jmeter_found else '❌ Invalid or Not Found'}
+        """)
+        
+        st.subheader("Finding JMeter Path on Your System")
+        
+        with st.expander("Windows Instructions"):
+            st.code("""
+# Open Command Prompt and run:
+where jmeter.bat
+
+# Or find JMeter installation:
+dir C:\\jmeter\\bin
+dir "C:\\Program Files\\Apache JMeter\\bin"
+            """, language="bash")
+        
+        with st.expander("Linux/Mac Instructions"):
+            st.code("""
+# Open Terminal and run:
+which jmeter
+
+# Or find JMeter installation:
+find /usr -name jmeter -type f
+find /opt -name jmeter -type f
+            """, language="bash")
         
         st.divider()
         
