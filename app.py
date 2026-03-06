@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 from typing import Optional, Dict, List, Tuple
 import tempfile
 import shutil
+import csv
+from io import StringIO
 
 # Try importing OpenAI
 try:
@@ -133,6 +135,29 @@ st.markdown("""
         border-radius: 4px;
         color: #d62728;
     }
+    
+    .scenario-config {
+        background-color: #e8f4f8;
+        border-left: 4px solid #1f77b4;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 4px;
+    }
+    
+    .report-metrics {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .metric-card {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 1rem;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,6 +184,16 @@ def init_session_state():
         'enhancements_suggested': False,
         'enhancement_recommendations': [],
         'improved_jmx_draft': '',
+        # Scenario design state
+        'scenario_config': {
+            'num_threads': 10,
+            'ramp_up_time': 60,
+            'steady_state_duration': 300,
+            'iterations': 1,
+            'loop_count': 1,
+        },
+        'aggregate_report': None,
+        'aggregate_report_generated': False,
     }
     
     for key, value in defaults.items():
@@ -194,7 +229,7 @@ def check_jmeter_file_exists(jmeter_executable: str) -> Tuple[bool, str]:
         return False, f"Error checking file: {str(e)}"
 
 
-def check_jmeter_installed(jmeter_executable: str = 'jmeter', timeout: int = 15) -> Tuple[bool, str]:
+def check_jmeter_installed(jmeter_executable: str = 'jmeter', timeout: int = 20) -> Tuple[bool, str]:
     """Check if JMeter is installed and accessible"""
     try:
         # Ensure executable path is provided
@@ -286,7 +321,107 @@ def save_temp_jmx(content: str) -> str:
     return temp_file
 
 
-def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 300) -> Tuple[bool, str, str]:
+def parse_jtl_results(jtl_file: str) -> Dict:
+    """Parse JTL (CSV) results file and generate aggregate report"""
+    try:
+        if not os.path.exists(jtl_file):
+            return None
+        
+        with open(jtl_file, 'r', encoding='utf-8', errors='ignore') as f:
+            # Read CSV content
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        
+        if not rows:
+            return None
+        
+        # Parse response times
+        response_times = []
+        success_count = 0
+        failure_count = 0
+        
+        for row in rows:
+            try:
+                elapsed = int(row.get('elapsed', 0))
+                success = row.get('success', 'false').lower() == 'true'
+                
+                response_times.append(elapsed)
+                if success:
+                    success_count += 1
+                else:
+                    failure_count += 1
+            except:
+                continue
+        
+        if not response_times:
+            return None
+        
+        # Calculate statistics
+        response_times.sort()
+        report = {
+            'total_samples': len(rows),
+            'success_count': success_count,
+            'failure_count': failure_count,
+            'success_rate': (success_count / len(rows) * 100) if rows else 0,
+            'min_response_time': min(response_times),
+            'max_response_time': max(response_times),
+            'avg_response_time': sum(response_times) / len(response_times),
+            'median_response_time': response_times[len(response_times) // 2],
+            'p90_response_time': response_times[int(len(response_times) * 0.9)],
+            'p95_response_time': response_times[int(len(response_times) * 0.95)],
+            'p99_response_time': response_times[int(len(response_times) * 0.99)],
+            'throughput': len(rows) / 60,  # Approximate throughput per second
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        return report
+    except Exception as e:
+        st.error(f"Error parsing JTL file: {str(e)}")
+        return None
+
+
+def modify_jmx_with_scenario(jmx_content: str, scenario: Dict) -> str:
+    """Modify JMX file with scenario parameters"""
+    try:
+        root = ET.fromstring(jmx_content)
+        
+        # Find ThreadGroup element
+        ns = {'': 'http://jmeter.apache.org/'}
+        
+        # Try to find ThreadGroup (with or without namespace)
+        thread_groups = root.findall('.//ThreadGroup')
+        if not thread_groups:
+            thread_groups = root.findall('.//{http://jmeter.apache.org/}ThreadGroup')
+        
+        for tg in thread_groups:
+            # Set number of threads
+            num_threads_elem = tg.find("elementProp[@name='ThreadGroup.main_controller']/elementProp[@name='ThreadGroup.num_threads']/stringProp")
+            if num_threads_elem is None:
+                # Try alternative structure
+                for elem in tg.findall(".//stringProp[@name='ThreadGroup.num_threads']"):
+                    elem.text = str(scenario['num_threads'])
+            else:
+                num_threads_elem.text = str(scenario['num_threads'])
+            
+            # Set ramp-up time
+            for elem in tg.findall(".//stringProp[@name='ThreadGroup.ramp_time']"):
+                elem.text = str(scenario['ramp_up_time'])
+            
+            # Set duration
+            for elem in tg.findall(".//stringProp[@name='ThreadGroup.duration']"):
+                elem.text = str(scenario['steady_state_duration'])
+            
+            # Set loop count
+            for elem in tg.findall(".//elementProp[@name='ThreadGroup.main_controller']/stringProp[@name='LoopController.loops']"):
+                elem.text = str(scenario['iterations'])
+        
+        return ET.tostring(root, encoding='unicode')
+    except Exception as e:
+        st.warning(f"Could not modify JMX with scenario (using original): {str(e)}")
+        return jmx_content
+
+
+def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 900) -> Tuple[bool, str, str]:
     """Execute JMeter in non-GUI mode for dry run"""
     try:
         results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
@@ -309,7 +444,8 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 300
             '-n',
             '-t', jmx_file,
             '-l', results_file,
-            '-j', log_file
+            '-j', log_file,
+            '-Jjmeter.save.saveservice.connect_time=true'  # Enable connect time
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -328,12 +464,12 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 300
             log_output = result.stdout if result.stdout else result.stderr
         
         success = result.returncode == 0
-        output = log_output if log_output else "No output captured"
+        output = log_output if log_output else "Execution completed"
         
         return success, output, results_file
         
     except subprocess.TimeoutExpired:
-        return False, "JMeter execution timed out (>5 minutes)", ""
+        return False, "JMeter execution timed out (>15 minutes). Consider reducing test duration or iteration count.", ""
     except Exception as e:
         return False, f"Error executing JMeter: {str(e)}", ""
 
@@ -506,6 +642,36 @@ def format_execution_history(history: List) -> str:
             formatted += f"- Summary: {entry['summary']}\n"
     
     return formatted
+
+
+def generate_aggregate_report_csv(report: Dict) -> str:
+    """Generate CSV format aggregate report"""
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # Header
+    writer.writerow(['JMeter Aggregate Report', report['timestamp']])
+    writer.writerow([])
+    
+    # Metrics
+    writer.writerow(['Metric', 'Value'])
+    writer.writerow(['Total Samples', report['total_samples']])
+    writer.writerow(['Successful', report['success_count']])
+    writer.writerow(['Failed', report['failure_count']])
+    writer.writerow(['Success Rate (%)', f"{report['success_rate']:.2f}"])
+    writer.writerow([])
+    writer.writerow(['Response Time Metrics (ms)'])
+    writer.writerow(['Min', report['min_response_time']])
+    writer.writerow(['Max', report['max_response_time']])
+    writer.writerow(['Average', f"{report['avg_response_time']:.2f}"])
+    writer.writerow(['Median', report['median_response_time']])
+    writer.writerow(['90th Percentile (P90)', report['p90_response_time']])
+    writer.writerow(['95th Percentile (P95)', report['p95_response_time']])
+    writer.writerow(['99th Percentile (P99)', report['p99_response_time']])
+    writer.writerow([])
+    writer.writerow(['Throughput (samples/sec)', f"{report['throughput']:.2f}"])
+    
+    return output.getvalue()
 
 
 # ============================================================================
@@ -705,6 +871,91 @@ def main():
         
         st.markdown('</div>', unsafe_allow_html=True)
         
+        # ==================== SCENARIO DESIGN PANEL ====================
+        st.markdown('<div class="panel"><div class="panel-title">🎯 Scenario Design Configuration</div>', unsafe_allow_html=True)
+        
+        st.markdown("""
+        **Define your load testing scenario parameters before running the test:**
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            <div class="scenario-config">
+            <strong>Load Configuration</strong>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            num_threads = st.number_input(
+                "Number of Users/Threads",
+                min_value=1,
+                max_value=1000,
+                value=st.session_state.scenario_config['num_threads'],
+                step=1,
+                help="Number of concurrent users/threads to simulate"
+            )
+            st.session_state.scenario_config['num_threads'] = num_threads
+            
+            ramp_up_time = st.number_input(
+                "Ramp-up Time (seconds)",
+                min_value=0,
+                max_value=3600,
+                value=st.session_state.scenario_config['ramp_up_time'],
+                step=5,
+                help="Time to reach the specified number of threads"
+            )
+            st.session_state.scenario_config['ramp_up_time'] = ramp_up_time
+        
+        with col2:
+            st.markdown("""
+            <div class="scenario-config">
+            <strong>Test Duration & Iterations</strong>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            steady_state_duration = st.number_input(
+                "Steady State Duration (seconds)",
+                min_value=1,
+                max_value=3600,
+                value=st.session_state.scenario_config['steady_state_duration'],
+                step=10,
+                help="How long to maintain the load at full capacity"
+            )
+            st.session_state.scenario_config['steady_state_duration'] = steady_state_duration
+            
+            iterations = st.number_input(
+                "Iterations Per Thread",
+                min_value=1,
+                max_value=100,
+                value=st.session_state.scenario_config['iterations'],
+                step=1,
+                help="Number of times each thread will execute the test"
+            )
+            st.session_state.scenario_config['iterations'] = iterations
+        
+        # Scenario Summary
+        total_requests = num_threads * iterations
+        total_time = ramp_up_time + steady_state_duration
+        
+        st.markdown("""
+        <div class="scenario-config">
+        <strong>Scenario Summary:</strong>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        with metric_col1:
+            st.metric("Total Requests", total_requests)
+        with metric_col2:
+            st.metric("Total Time", f"{total_time}s")
+        with metric_col3:
+            st.metric("Requests/sec", f"{total_requests/total_time:.2f}" if total_time > 0 else "0")
+        with metric_col4:
+            st.metric("Total Duration", f"{int(total_time/60)}m {int(total_time%60)}s")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
         # ==================== RUN CONTROL PANEL ====================
         st.markdown('<div class="panel"><div class="panel-title">▶️ Run Control</div>', unsafe_allow_html=True)
         
@@ -733,22 +984,36 @@ def main():
                 "🚀 Run Dry Run",
                 disabled=not can_run_dry_run,
                 use_container_width=True,
-                help="Execute JMeter in non-GUI mode" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Click Verify"
+                help="Execute JMeter with scenario parameters" if can_run_dry_run else "Please: 1) Upload JMX file 2) Set JMeter path 3) Click Verify"
             ):
-                with st.spinner("🔄 Executing JMeter dry run... (this may take a few minutes)"):
-                    temp_jmx = save_temp_jmx(st.session_state.jmx_content)
-                    success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path)
+                with st.spinner(f"🔄 Executing JMeter (Scenario: {num_threads} users, {steady_state_duration}s duration)...\n\nThis may take several minutes depending on your scenario."):
+                    # Modify JMX with scenario parameters
+                    modified_jmx = modify_jmx_with_scenario(st.session_state.jmx_content, st.session_state.scenario_config)
+                    temp_jmx = save_temp_jmx(modified_jmx)
+                    
+                    # Calculate timeout based on scenario
+                    estimated_duration = (ramp_up_time + steady_state_duration) * 1.5
+                    timeout = max(600, int(estimated_duration) + 120)  # Minimum 10 minutes, plus buffer
+                    
+                    success, output, results_file = run_jmeter_dry_run(temp_jmx, st.session_state.jmeter_path, timeout=timeout)
                     
                     st.session_state.last_run_output = output
                     st.session_state.last_run_status = "success" if success else "failed"
                     st.session_state.dry_run_executed = True
+                    
+                    # Parse aggregate report from JTL results
+                    if success and results_file:
+                        aggregate_report = parse_jtl_results(results_file)
+                        if aggregate_report:
+                            st.session_state.aggregate_report = aggregate_report
+                            st.session_state.aggregate_report_generated = True
                     
                     # Add to history
                     history_entry = {
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'filename': st.session_state.jmx_filename,
                         'status': st.session_state.last_run_status,
-                        'summary': f"Execution completed with {'success' if success else 'errors'}"
+                        'summary': f"Execution completed ({num_threads} users, {total_requests} requests)"
                     }
                     st.session_state.run_history.append(history_entry)
                     
@@ -789,34 +1054,99 @@ def main():
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # ==================== RUN OUTPUT SUMMARY PANEL ====================
-        if st.session_state.dry_run_executed:
-            st.markdown('<div class="panel"><div class="panel-title">📊 Run Output & Summary</div>', unsafe_allow_html=True)
+        # ==================== AGGREGATE REPORT PANEL ====================
+        if st.session_state.aggregate_report_generated and st.session_state.aggregate_report:
+            st.markdown('<div class="panel"><div class="panel-title">📊 Aggregate Report</div>', unsafe_allow_html=True)
+            
+            report = st.session_state.aggregate_report
             
             # Status indicator
             if st.session_state.last_run_status == "success":
                 st.markdown(
-                    '<p class="status-success">✅ DRY RUN SUCCESSFUL</p>',
+                    '<p class="status-success">✅ TEST EXECUTION SUCCESSFUL</p>',
                     unsafe_allow_html=True
                 )
             else:
                 st.markdown(
-                    '<p class="status-error">❌ DRY RUN FAILED - Review Output Below</p>',
+                    '<p class="status-warning">⚠️ TEST COMPLETED WITH WARNINGS</p>',
                     unsafe_allow_html=True
                 )
             
-            # Parse and display summary
-            run_summary = parse_jmeter_output(st.session_state.last_run_output)
+            st.caption(f"Report Generated: {report['timestamp']}")
+            st.divider()
             
-            col1, col2, col3 = st.columns(3)
+            # Key metrics
+            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+            with metric_col1:
+                st.metric("Total Samples", report['total_samples'])
+            with metric_col2:
+                st.metric("Success Rate", f"{report['success_rate']:.2f}%")
+            with metric_col3:
+                st.metric("Avg Response Time", f"{report['avg_response_time']:.0f}ms")
+            with metric_col4:
+                st.metric("Throughput", f"{report['throughput']:.2f}/s")
+            
+            st.divider()
+            
+            # Detailed metrics
+            col1, col2 = st.columns(2)
+            
             with col1:
-                st.metric("Errors Detected", len(run_summary['errors']))
-            with col2:
-                st.metric("Failed Requests", run_summary['failed_requests'])
-            with col3:
-                st.metric("Status", st.session_state.last_run_status.upper())
+                st.subheader("Success/Failure")
+                st.metric("Successful Requests", report['success_count'])
+                st.metric("Failed Requests", report['failure_count'])
             
-            # Detailed output
+            with col2:
+                st.subheader("Response Time Statistics (ms)")
+                st.metric("Min", report['min_response_time'])
+                st.metric("Max", report['max_response_time'])
+                st.metric("Median", report['median_response_time'])
+            
+            st.divider()
+            
+            # Percentile metrics
+            st.subheader("Response Time Percentiles (ms)")
+            perc_col1, perc_col2, perc_col3 = st.columns(3)
+            
+            with perc_col1:
+                st.metric("90th Percentile (P90)", report['p90_response_time'])
+            with perc_col2:
+                st.metric("95th Percentile (P95)", report['p95_response_time'])
+            with perc_col3:
+                st.metric("99th Percentile (P99)", report['p99_response_time'])
+            
+            st.divider()
+            
+            # Download report
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                csv_report = generate_aggregate_report_csv(report)
+                st.download_button(
+                    label="📥 Download Aggregate Report (CSV)",
+                    data=csv_report,
+                    file_name=f"jmeter_aggregate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # JSON export
+                json_report = json.dumps(report, indent=2, default=str)
+                st.download_button(
+                    label="📥 Download Report (JSON)",
+                    data=json_report,
+                    file_name=f"jmeter_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # ==================== RUN OUTPUT SUMMARY PANEL ====================
+        if st.session_state.dry_run_executed:
+            st.markdown('<div class="panel"><div class="panel-title">📝 Execution Details & Logs</div>', unsafe_allow_html=True)
+            
             with st.expander("📝 Full JMeter Output Log", expanded=False):
                 st.text_area(
                     "JMeter Log Output",
@@ -932,216 +1262,137 @@ def main():
     with tab2:  # DOCUMENTATION
         st.header("📚 User Guide & Documentation")
         
-        st.subheader("Getting Started")
+        st.subheader("Complete Workflow Guide")
         st.markdown("""
-        ### 1. **Setup & Configuration**
-        - JMeter must be installed on your system
-        - Obtain an OpenAI API key from [platform.openai.com](https://platform.openai.com/api-keys)
-        - Enter your JMeter path and API key in the sidebar configuration
+        ### **Step 1: Configure JMeter Path**
+        - Sidebar → Enter JMeter executable path
+        - Click "Verify" to confirm installation
         
-        ### 2. **Configuring JMeter Path (Without System PATH Access)**
+        ### **Step 2: Upload JMX Script**
+        - Upload your JMeter test plan file (`.jmx`)
+        - Verify the green "Valid JMX file" message
         
-        #### Windows
-        ```
-        C:\\jmeter\\bin\\jmeter.bat
-        C:\\Program Files\\Apache JMeter\\bin\\jmeter.bat
-        ```
+        ### **Step 3: Design Test Scenario**
+        - **Number of Users/Threads**: Concurrent load (1-1000)
+        - **Ramp-up Time**: How quickly to reach full load (0-3600 seconds)
+        - **Steady State Duration**: How long to maintain the load (1-3600 seconds)
+        - **Iterations Per Thread**: Repetitions per user (1-100)
         
-        #### Linux/Mac
-        ```
-        /usr/bin/jmeter
-        /usr/local/bin/jmeter
-        /opt/jmeter/bin/jmeter
-        ```
+        **Scenario Example:**
+        - 10 users, 60s ramp-up, 300s steady state, 5 iterations
+        - Total: 50 requests over 6 minutes
         
-        #### If you don't know the path:
-        - **Windows**: Open Command Prompt, type `where jmeter.bat`
-        - **Linux/Mac**: Open Terminal, type `which jmeter`
+        ### **Step 4: Run Dry Run**
+        - Click "🚀 Run Dry Run" button
+        - System will:
+          - Modify JMX with your scenario parameters
+          - Execute JMeter in non-GUI mode
+          - Generate results file (JTL)
+          - Parse and display aggregate report
         
-        ### 3. **Upload Your JMeter Script**
-        - Click the upload area to select your `.jmx` file
-        - The system will validate the XML structure
-        - View the script using the "View Script" button
+        **⏱️ Wait Time:**
+        - Based on your scenario duration
+        - E.g., 5 min scenario = ~6-8 min total execution
         
-        ### 4. **Run Dry Run**
-        - **Prerequisites:**
-          1. Upload a valid JMX file ✅
-          2. Enter a valid JMeter path ✅
-          3. Click "Verify" button to confirm JMeter is accessible ✅
-        - Click "Run Dry Run" to execute your script in non-GUI mode
-        - The system executes: `jmeter -n -t <file.jmx> -l results.jtl -j jmeter.log`
-        - Results and logs are analyzed automatically
+        ### **Step 5: Review Aggregate Report**
+        - View key metrics (success rate, response times, percentiles)
+        - Download as CSV or JSON
         
-        ### 5. **AI-Powered Analysis**
-        - **Correlation Analysis**: Identifies variables and tokens to extract
-        - **Enhancement Suggestions**: Recommends optimizations and best practices
-        - Uses GPT-4 Turbo for intelligent analysis
-        - Requires valid OpenAI API key
+        ### **Step 6: AI Analysis (Optional)**
+        - Click "Analyze for Correlations" to find dynamic variables
+        - Click "Get Enhancement Recommendations" for improvements
+        - Download improved JMX draft
         
-        ### 6. **Download Improved Script**
-        - Review recommended enhancements
-        - Download the AI-generated improved JMX draft
-        - Manually review before using in production
+        ---
+        
+        ### **Scenario Parameter Guide**
+        
+        | Parameter | Range | Default | Purpose |
+        |-----------|-------|---------|---------|
+        | Number of Threads | 1-1000 | 10 | Concurrent users |
+        | Ramp-up Time | 0-3600s | 60s | Time to reach full load |
+        | Steady State | 1-3600s | 300s | Duration at full load |
+        | Iterations | 1-100 | 1 | Per-thread repetitions |
+        
+        **Quick Presets:**
+        - **Smoke Test**: 2 users, 5s ramp-up, 30s steady, 1 iteration
+        - **Load Test**: 50 users, 120s ramp-up, 600s steady, 2 iterations
+        - **Stress Test**: 100 users, 30s ramp-up, 600s steady, 1 iteration
+        - **Soak Test**: 20 users, 60s ramp-up, 3600s steady, 1 iteration
         """)
         
         st.divider()
         
-        st.subheader("Troubleshooting: Verify Button Timeout?")
+        st.subheader("Aggregate Report Metrics Explained")
         st.markdown("""
-        If you see "jmeter version check timed out" error:
-        
-        **This is normal!** JMeter can take time to start, especially on first run.
-        
-        **Quick Fixes:**
-        
-        1. **Try Again**: Click "Verify" button again - it usually works on second attempt
-        
-        2. **Use Auto-Detect**: Click "Auto-Detect" button instead - it's more forgiving
-        
-        3. **Confirm File Exists**: Even if verification times out, if the file path is correct, 
-           the dry run should work. Look for the green ✅ checkmark
-        
-        4. **Check JMeter Installation**:
-           - Windows: Open Command Prompt, run `C:\\jmeter\\bin\\jmeter.bat --version`
-           - Linux/Mac: Open Terminal, run `/usr/bin/jmeter --version`
-        
-        5. **Alternative**: Just upload JMX and click "Run Dry Run" - 
-           the system will verify JMeter works when you actually run it
+        - **Total Samples**: Total number of requests executed
+        - **Success Rate**: % of successful requests
+        - **Avg Response Time**: Average time to get response
+        - **Throughput**: Requests processed per second
+        - **Min/Max**: Fastest/slowest request
+        - **Percentiles (P90/P95/P99)**: Response time thresholds
+          - P90: 90% of requests complete within this time
+          - P95: 95% of requests complete within this time
+          - P99: 99% of requests complete within this time
         """)
         
         st.divider()
         
-        st.subheader("Troubleshooting: Run Dry Run Button Not Enabled?")
+        st.subheader("Troubleshooting")
         st.markdown("""
-        The "Run Dry Run" button requires **THREE conditions** to be enabled:
+        ### **"JMeter execution timed out" error**
+        - **Cause**: Test duration exceeds timeout window
+        - **Solution**: 
+          - Reduce scenario duration (ramp-up + steady state)
+          - Reduce number of threads
+          - Reduce iterations per thread
         
-        1. **✅ JMX File Uploaded**
-           - Click in the upload area
-           - Select your `.jmx` file
-           - Verify the green "Valid JMX file" message appears
+        ### **Run Dry Run button disabled**
+        - Check: JMX Loaded ✅
+        - Check: JMeter Ready ✅
+        - Check: Path Set ✅
         
-        2. **✅ JMeter Path Configured**
-           - Enter full path in "JMeter Executable Path" field
-           - Examples:
-             - Windows: `C:\\jmeter\\bin\\jmeter.bat`
-             - Linux/Mac: `/usr/bin/jmeter`
-        
-        3. **✅ JMeter Verified**
-           - Click "Verify" button (timeout is OK!)
-           - Wait for green "✅ JMeter Ready" message in System Status
-           - **Note**: Even if verification times out, the status may still show as ready
-        
-        **Debug Checklist in Run Control Panel:**
-        ```
-        JMX Loaded: ✅ (must be green)
-        JMeter Ready: ✅ (must be green)
-        Path Set: ✅ (must be green)
-        ```
-        
-        If all three are green, the "Run Dry Run" button will be **enabled**.
-        """)
-        
-        st.divider()
-        
-        st.subheader("Feature Overview")
-        
-        features = {
-            "📤 JMX Upload & Validation": "Upload and validate JMeter test plans with XML schema validation",
-            "▶️ Dry Run Execution": "Execute scripts in non-GUI mode with detailed logging",
-            "🔗 Correlation Analysis": "AI identifies variables that need correlation (session tokens, CSRF tokens, etc.)",
-            "💡 Enhancement Suggestions": "AI recommends optimizations, assertions, and best practices",
-            "📊 Detailed Reporting": "Comprehensive summaries of execution results and issues",
-            "📦 Improved Draft Preview": "Generated enhanced JMX scripts ready for download",
-            "📋 Execution History": "Session-scoped history of all executed runs",
-        }
-        
-        for feature, description in features.items():
-            st.markdown(f"**{feature}**: {description}")
-        
-        st.divider()
-        
-        st.subheader("API Key Security")
-        st.warning("""
-        🔐 **Important Security Notes:**
-        - Your API key is only used for the duration of your session
-        - It is NOT stored or persisted anywhere
-        - It is sent directly to OpenAI for analysis
-        - Use a dedicated API key with appropriate rate limits
-        - Never share your API key with others
+        ### **No aggregate report generated**
+        - Ensure test ran successfully (✅ status)
+        - Check for JMeter errors in logs
+        - Verify test has at least 1 request
         """)
     
     with tab3:  # SETTINGS
         st.header("⚙️ Settings & Preferences")
         
-        st.subheader("JMeter Path Configuration")
+        st.subheader("JMeter Configuration")
         st.info(f"""
-        **Current JMeter Path:** `{st.session_state.jmeter_path if st.session_state.jmeter_path else 'Not configured'}`
+        **Current Path:** `{st.session_state.jmeter_path if st.session_state.jmeter_path else 'Not configured'}`
         
-        **Status:** {'✅ Valid and Ready' if st.session_state.jmeter_found else '❌ Invalid or Not Found'}
+        **Status:** {'✅ Valid' if st.session_state.jmeter_found else '❌ Not Found'}
         """)
         
-        st.subheader("Finding JMeter Path on Your System")
-        
-        with st.expander("🪟 Windows Instructions"):
-            st.code("""
-# Open Command Prompt (cmd.exe) and run:
-where jmeter.bat
-
-# Example output:
-# C:\\jmeter\\bin\\jmeter.bat
-
-# Copy this path to the sidebar configuration
-            """, language="bash")
-        
-        with st.expander("🐧 Linux/Mac Instructions"):
-            st.code("""
-# Open Terminal and run:
-which jmeter
-
-# Example output:
-# /usr/local/bin/jmeter
-
-# Copy this path to the sidebar configuration
-            """, language="bash")
-        
-        st.divider()
-        
-        st.subheader("AI Model Configuration")
-        st.info("""
-        **Current Configuration:**
-        - Model: OpenAI GPT-4 Turbo
-        - Temperature: 0.3 (for consistent, focused responses)
-        - Max Tokens: 2000-3000 (depending on task)
-        - Response Format: JSON with technical details
-        """)
+        st.subheader("Current Scenario Settings")
+        st.json(st.session_state.scenario_config)
         
         st.divider()
         
         st.subheader("About This Application")
         st.markdown("""
-        **AI-Powered JMeter Script Enhancer v1.2**
+        **AI-Powered JMeter Script Enhancer v2.0**
         
-        A professional Streamlit dashboard for analyzing and enhancing JMeter performance test scripts 
-        using OpenAI's GPT models.
+        Professional Streamlit dashboard for load testing script analysis and optimization.
+        
+        **v2.0 Features:**
+        - ✅ Scenario design with custom parameters
+        - ✅ Aggregate report generation from JTL results
+        - ✅ CSV/JSON report export
+        - ✅ AI correlation analysis
+        - ✅ AI enhancement recommendations
+        - ✅ Improved timeout handling
+        - ✅ Downloadable reports
         
         **Built with:**
         - 🐍 Python & Streamlit
         - 🤖 OpenAI GPT-4 Turbo API
         - 📊 JMeter
-        - 🎨 Corporate light theme UI
-        
-        **Designed for:**
-        - Performance Testers
-        - QA Engineers
-        - SDETs (SDET)
-        - DevOps Engineers
-        
-        **v1.2 Improvements:**
-        - Fixed JMeter timeout issues with increased timeout window
-        - Added fallback path validation (checks file existence)
-        - Improved error messages and diagnostics
-        - Better handling of slow JMeter startup
-        - More forgiving verification process
+        - 📈 CSV parsing for result analysis
         """)
 
 
