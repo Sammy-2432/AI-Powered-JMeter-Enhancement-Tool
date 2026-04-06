@@ -209,6 +209,7 @@ def init_session_state():
         'csv_files': {},
         'csv_configs_found': [],
         'csv_file_paths': {},
+        'jmeter_run_dir': '',  # Static directory for JMeter execution
     }
     
     for key, value in defaults.items():
@@ -222,6 +223,32 @@ init_session_state()
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
+
+def create_jmeter_run_directory(run_dir: str) -> bool:
+    """Create JMeter run directory with proper permissions"""
+    try:
+        if not run_dir or run_dir.strip() == '':
+            st.error("❌ JMeter run directory path cannot be empty")
+            return False
+        
+        run_dir = run_dir.strip()
+        os.makedirs(run_dir, exist_ok=True)
+        
+        # Test write permissions
+        test_file = os.path.join(run_dir, '.write_test')
+        try:
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            st.success(f"✅ JMeter run directory created/verified: {run_dir}")
+            return True
+        except PermissionError:
+            st.error(f"❌ No write permission for: {run_dir}")
+            return False
+    except Exception as e:
+        st.error(f"❌ Error creating directory: {str(e)}")
+        return False
+
 
 def extract_csv_dataset_configs(jmx_content: str) -> List[Dict]:
     """Extract all CSV Dataset Config elements from JMX"""
@@ -576,19 +603,28 @@ def parse_jmeter_output(log_content: str) -> Dict:
     return summary
 
 
-def save_temp_jmx(content: str) -> str:
-    """Save JMX content to temporary file"""
-    temp_dir = tempfile.gettempdir()
-    temp_file = os.path.join(temp_dir, 'jmeter_temp.jmx')
-    with open(temp_file, 'w', encoding='utf-8') as f:
-        f.write(content)
-    return temp_file
+def save_temp_jmx(content: str, run_dir: str = None) -> Optional[str]:
+    """Save JMX content to file in run directory or temp directory"""
+    try:
+        if run_dir and os.path.exists(run_dir):
+            save_dir = run_dir
+        else:
+            save_dir = tempfile.gettempdir()
+        
+        temp_file = os.path.join(save_dir, f'jmeter_test_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jmx')
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return temp_file
+    except Exception as e:
+        st.error(f"❌ Error saving JMX file: {str(e)}")
+        return None
 
 
-def parse_jtl_results(jtl_file: str) -> Dict:
+def parse_jtl_results(jtl_file: str) -> Optional[Dict]:
     """Parse JTL (CSV) results file and generate aggregate report"""
     try:
         if not os.path.exists(jtl_file):
+            st.warning(f"⚠️ JTL file not found: {jtl_file}")
             return None
         
         with open(jtl_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -596,6 +632,7 @@ def parse_jtl_results(jtl_file: str) -> Dict:
             rows = list(reader)
         
         if not rows:
+            st.warning("⚠️ JTL file is empty")
             return None
         
         response_times = []
@@ -641,18 +678,21 @@ def parse_jtl_results(jtl_file: str) -> Dict:
         return None
 
 
-def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 1800, working_dir: str = None) -> Tuple[bool, str, str]:
-    """Execute JMeter in non-GUI mode with proper working directory"""
+def run_jmeter_dry_run(
+    jmx_file: str,
+    jmeter_executable: str,
+    run_dir: str,
+    timeout: int = 1800
+) -> Tuple[bool, str, str]:
+    """Execute JMeter in non-GUI mode with static directory for output files"""
     try:
-        results_file = os.path.join(tempfile.gettempdir(), 'results.jtl')
-        log_file = os.path.join(tempfile.gettempdir(), 'jmeter.log')
+        # Use run_dir for all output files
+        results_file = os.path.join(run_dir, f'results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jtl')
+        log_file = os.path.join(run_dir, f'jmeter_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
         
-        for f in [results_file, log_file]:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except:
-                    pass
+        st.info(f"📁 Results will be saved to: {run_dir}")
+        st.info(f"📊 JTL File: {results_file}")
+        st.info(f"📝 Log File: {log_file}")
         
         path = jmeter_executable.strip('"\'')
         
@@ -666,27 +706,39 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 180
         
         st.session_state.execution_command = ' '.join(cmd)
         st.info(f"📋 Executing: `{' '.join(cmd)}`")
-        if working_dir:
-            st.info(f"📁 Working Directory: `{working_dir}`")
+        st.info(f"📁 Working Directory: `{run_dir}`")
         
+        # Run JMeter with run_dir as working directory
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=working_dir
+            cwd=run_dir
         )
         
+        st.info(f"✅ JMeter execution completed with return code: {result.returncode}")
+        
         log_output = ""
+        
+        # Try to read log file
         if os.path.exists(log_file):
             try:
                 with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
                     log_output = f.read()
+                st.success(f"✅ Log file created: {log_file}")
             except Exception as e:
                 log_output = f"Error reading log: {str(e)}\n"
-        
-        if not log_output:
+                st.warning(f"⚠️ Could not read log file: {str(e)}")
+        else:
+            st.warning(f"⚠️ Log file not created at: {log_file}")
             log_output = result.stdout if result.stdout else result.stderr
+        
+        # Check if results file was created
+        if os.path.exists(results_file):
+            st.success(f"✅ Results file created: {results_file}")
+        else:
+            st.warning(f"⚠️ Results file not created at: {results_file}")
         
         success = os.path.exists(results_file) and result.returncode == 0
         output = log_output if log_output else "Execution completed"
@@ -694,8 +746,9 @@ def run_jmeter_dry_run(jmx_file: str, jmeter_executable: str, timeout: int = 180
         return success, output, results_file
         
     except subprocess.TimeoutExpired:
-        return False, f"⏱️ JMeter execution timed out after {timeout} seconds.\n\nTips to reduce timeout:\n- Reduce number of threads\n- Reduce steady state duration\n- Reduce iterations\n- Reduce test plan complexity", ""
+        return False, f"⏱️ JMeter execution timed out after {timeout} seconds.\n\nTips to reduce timeout:\n- Reduce number of threads\n- Reduce steady state duration\n- Reduce iterations", ""
     except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
         return False, f"Error executing JMeter: {str(e)}", ""
 
 
@@ -981,6 +1034,50 @@ def main():
         
         st.divider()
         
+        st.subheader("JMeter Run Directory")
+        st.markdown("""
+        ℹ️ **Set Output Directory for Test Results**
+        
+        Use a dedicated directory for JMeter output files (.jtl, .log).
+        
+        **Recommended:** `C:\\JMeter_Run` or `/opt/jmeter_run`
+        """)
+        
+        jmeter_run_dir = st.text_input(
+            "JMeter Run Directory",
+            value=st.session_state.jmeter_run_dir,
+            placeholder="e.g., C:\\JMeter_Run or /opt/jmeter_run",
+            help="Directory where JMeter will save output files (results.jtl, jmeter.log, etc.)",
+            key="jmeter_run_dir_input"
+        )
+        
+        if jmeter_run_dir.strip() != st.session_state.jmeter_run_dir.strip():
+            st.session_state.jmeter_run_dir = jmeter_run_dir.strip()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("✓ Create/Verify", use_container_width=True, help="Create directory and verify permissions"):
+                if st.session_state.jmeter_run_dir.strip():
+                    if create_jmeter_run_directory(st.session_state.jmeter_run_dir):
+                        st.rerun()
+                else:
+                    st.error("❌ Please enter a directory path first")
+        
+        with col2:
+            if st.button("📁 Browse", use_container_width=True, help="Show current directory contents"):
+                if st.session_state.jmeter_run_dir and os.path.exists(st.session_state.jmeter_run_dir):
+                    try:
+                        files = os.listdir(st.session_state.jmeter_run_dir)
+                        if files:
+                            st.info(f"📂 Files in {st.session_state.jmeter_run_dir}:\n" + "\n".join(files[:10]))
+                        else:
+                            st.info("📂 Directory is empty")
+                    except Exception as e:
+                        st.error(f"❌ Error listing files: {str(e)}")
+        
+        st.divider()
+        
         with st.expander("🔎 Help Finding JMeter Path"):
             st.markdown("""
             **Windows:**
@@ -1014,19 +1111,28 @@ def main():
         
         st.subheader("System Status")
         
-        if st.session_state.jmeter_path and st.session_state.jmeter_path.strip():
-            if st.session_state.jmeter_found:
-                st.success(f"✅ JMeter Ready")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.session_state.jmeter_path and st.session_state.jmeter_path.strip():
+                if st.session_state.jmeter_found:
+                    st.success(f"✅ JMeter Ready")
+                else:
+                    st.markdown("""
+                    <div class="error-message">
+                    <strong>❌ JMeter Not Verified</strong><br>
+                    Click "Verify" button to test the path
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
-                st.markdown("""
-                <div class="error-message">
-                <strong>❌ JMeter Not Verified</strong><br>
-                Click "Verify" button to test the path
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.warning("⚠️ Please configure JMeter path above")
-            st.session_state.jmeter_found = False
+                st.warning("⚠️ Please configure JMeter path")
+                st.session_state.jmeter_found = False
+        
+        with col2:
+            if st.session_state.jmeter_run_dir and os.path.exists(st.session_state.jmeter_run_dir):
+                st.success(f"✅ Run Dir Ready")
+            else:
+                st.warning("⚠️ Configure Run Directory")
         
         st.divider()
         
@@ -1302,7 +1408,7 @@ def main():
         with debug_col2:
             st.metric("JMeter Ready", "✅" if st.session_state.jmeter_found else "❌")
         with debug_col3:
-            st.metric("Path Set", "✅" if st.session_state.jmeter_path else "❌")
+            st.metric("Run Dir Set", "✅" if (st.session_state.jmeter_run_dir and os.path.exists(st.session_state.jmeter_run_dir)) else "❌")
         
         st.divider()
         
@@ -1311,7 +1417,8 @@ def main():
         can_run_dry_run = (
             bool(st.session_state.jmx_content and st.session_state.jmx_content.strip()) and
             bool(st.session_state.jmeter_path and st.session_state.jmeter_path.strip()) and
-            st.session_state.jmeter_found
+            st.session_state.jmeter_found and
+            bool(st.session_state.jmeter_run_dir and os.path.exists(st.session_state.jmeter_run_dir))
         )
         
         with col1:
@@ -1319,7 +1426,7 @@ def main():
                 "🚀 Run Dry Run",
                 disabled=not can_run_dry_run,
                 use_container_width=True,
-                help="Execute JMeter with scenario parameters" if can_run_dry_run else "Please: 1) Upload JMX 2) Set JMeter path 3) Click Verify"
+                help="Execute JMeter with scenario parameters" if can_run_dry_run else "Please: 1) Upload JMX 2) Set JMeter path 3) Configure Run Directory 4) Click Verify"
             ):
                 with st.spinner(f"🔄 Executing JMeter ({len(st.session_state.scenario_config.get('selected_thread_groups', []))} ThreadGroup(s))...\n\n⏳ This may take several minutes."):
                     # Modify JMX with CSV paths (if provided)
@@ -1329,46 +1436,41 @@ def main():
                     
                     # Modify JMX with scenario parameters
                     modified_jmx = modify_all_thread_groups(modified_jmx, st.session_state.scenario_config)
-                    temp_jmx = save_temp_jmx(modified_jmx)
+                    temp_jmx = save_temp_jmx(modified_jmx, st.session_state.jmeter_run_dir)
                     
-                    # Determine working directory
-                    working_dir = os.path.dirname(temp_jmx) if temp_jmx else None
-                    
-                    # Calculate timeout
-                    estimated_duration = (ramp_up_time + steady_state_duration) * 1.5
-                    timeout = max(1200, int(estimated_duration) + 300)
-                    
-                    success, output, results_file = run_jmeter_dry_run(
-                        temp_jmx, 
-                        st.session_state.jmeter_path, 
-                        timeout=timeout,
-                        working_dir=working_dir
-                    )
-                    
-                    st.session_state.last_run_output = output
-                    st.session_state.last_run_status = "success" if success else "failed"
-                    st.session_state.dry_run_executed = True
-                    
-                    if success and results_file:
-                        aggregate_report = parse_jtl_results(results_file)
-                        if aggregate_report:
-                            st.session_state.aggregate_report = aggregate_report
-                            st.session_state.aggregate_report_generated = True
-                    
-                    history_entry = {
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'filename': st.session_state.jmx_filename,
-                        'status': st.session_state.last_run_status,
-                        'summary': f"Executed ({num_threads} users, {len(st.session_state.scenario_config.get('selected_thread_groups', []))} ThreadGroup(s))"
-                    }
-                    st.session_state.run_history.append(history_entry)
-                    
-                    try:
-                        os.remove(temp_jmx)
-                    except:
-                        pass
-                    
-                    st.rerun()
+                    if temp_jmx:
+                        # Calculate timeout
+                        estimated_duration = (ramp_up_time + steady_state_duration) * 1.5
+                        timeout = max(1200, int(estimated_duration) + 300)
+                        
+                        success, output, results_file = run_jmeter_dry_run(
+                            temp_jmx,
+                            st.session_state.jmeter_path,
+                            st.session_state.jmeter_run_dir,
+                            timeout=timeout
+                        )
+                        
+                        st.session_state.last_run_output = output
+                        st.session_state.last_run_status = "success" if success else "failed"
+                        st.session_state.dry_run_executed = True
+                        
+                        if success and results_file:
+                            aggregate_report = parse_jtl_results(results_file)
+                            if aggregate_report:
+                                st.session_state.aggregate_report = aggregate_report
+                                st.session_state.aggregate_report_generated = True
+                        
+                            history_entry = {
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                'filename': st.session_state.jmx_filename,
+                                'status': st.session_state.last_run_status,
+                                'summary': f"Executed ({num_threads} users, {len(st.session_state.scenario_config.get('selected_thread_groups', []))} ThreadGroup(s))"
+                            }
+                            st.session_state.run_history.append(history_entry)
+                            
+                            st.rerun()
+                    else:
+                        st.error("Failed to create/save JMX file")
         
         with col2:
             show_script = st.button(
@@ -1439,7 +1541,7 @@ def main():
                 st.metric("Failed Requests", report['failure_count'])
             
             with col2:
-                st.subheading("Response Time Statistics (ms)")
+                st.subheader("Response Time Statistics (ms)")
                 st.metric("Min", report['min_response_time'])
                 st.metric("Max", report['max_response_time'])
                 st.metric("Median", report['median_response_time'])
@@ -1604,6 +1706,53 @@ def main():
     with tab2:  # DOCUMENTATION
         st.header("📚 User Guide & Documentation")
         
+        st.subheader("🎯 JMeter Run Directory Setup")
+        st.markdown("""
+        ### **Why is a JMeter Run Directory Important?**
+        
+        JMeter needs a dedicated directory to write output files (.jtl, .log). Using temp directories can cause:
+        - Permission issues
+        - Files not being created
+        - Timeout errors
+        - Missing results
+        
+        ### **How to Set Up Run Directory**
+        
+        **Windows:**
+        ```
+        1. Create directory: C:\\JMeter_Run
+        2. Ensure full permissions on directory
+        3. Enter in "JMeter Run Directory" field
+        4. Click "Create/Verify" button
+        ```
+        
+        **Linux/Mac:**
+        ```
+        1. Create directory: /opt/jmeter_run
+        2. Set permissions: chmod 755 /opt/jmeter_run
+        3. Enter in "JMeter Run Directory" field
+        4. Click "Create/Verify" button
+        ```
+        
+        ### **What Gets Saved in Run Directory**
+        
+        - `results_YYYYMMDD_HHMMSS.jtl` - Test results in CSV format
+        - `jmeter_YYYYMMDD_HHMMSS.log` - JMeter execution logs
+        - `jmeter_test_YYYYMMDD_HHMMSS.jmx` - Modified test script
+        
+        ### **Directory Structure Example**
+        ```
+        C:\\JMeter_Run\\
+        ├── results_20260406_101530.jtl
+        ├── jmeter_20260406_101530.log
+        ├── jmeter_test_20260406_101530.jmx
+        ├── results_20260406_102045.jtl
+        └── jmeter_20260406_102045.log
+        ```
+        """)
+        
+        st.divider()
+        
         st.subheader("🎯 CSV Dataset Configuration Guide")
         st.markdown("""
         ### **What is CSV Dataset Configuration?**
@@ -1702,29 +1851,40 @@ def main():
         
         st.subheader("🎯 Complete Workflow Guide")
         st.markdown("""
-        ### **Step 1: Upload JMX Script**
+        ### **Step 1: Configure JMeter Path**
+        - Enter full path to jmeter executable
+        - Click "Verify" to test
+        
+        ### **Step 2: Configure Run Directory**
+        - Create directory like C:\\JMeter_Run
+        - Enter path and click "Create/Verify"
+        - Dashboard verifies write permissions
+        
+        ### **Step 3: Upload JMX Script**
         - Dashboard detects ThreadGroups and CSV configs
         - Shows original values extracted from script
         
-        ### **Step 2: Configure CSV Paths (if needed)**
+        ### **Step 4: Configure CSV Paths (if needed)**
         - Update any CSV filepaths that don't match your setup
         - Leave blank if paths are correct
         
-        ### **Step 3: Design Test Scenario**
+        ### **Step 5: Design Test Scenario**
         - Set threads, ramp-up, duration, iterations
         - Choose: Apply to ALL or SELECTED ThreadGroups
         
-        ### **Step 4: Run Dry Run**
+        ### **Step 6: Run Dry Run**
         - System modifies JMX with your settings
         - Updates CSV paths
         - Updates ThreadGroup parameters
+        - Saves modified JMX to Run Directory
         - Executes JMeter
+        - Results saved to Run Directory
         
-        ### **Step 5: View Results**
+        ### **Step 7: View Results**
         - Aggregate Report with metrics
         - Download as CSV or JSON
         
-        ### **Step 6: AI Analysis (Optional)**
+        ### **Step 8: AI Analysis (Optional)**
         - Get correlation suggestions
         - Get enhancement recommendations
         """)
@@ -1758,10 +1918,31 @@ def main():
         st.json({
             "jmeter_path": st.session_state.jmeter_path or "Not configured",
             "jmeter_status": "Ready" if st.session_state.jmeter_found else "Not verified",
+            "jmeter_run_dir": st.session_state.jmeter_run_dir or "Not configured",
+            "run_dir_exists": os.path.exists(st.session_state.jmeter_run_dir) if st.session_state.jmeter_run_dir else False,
             "threadgroups_detected": len(st.session_state.original_thread_groups),
             "csv_configs_detected": len(st.session_state.csv_configs_found),
             "scenario_config": st.session_state.scenario_config
         })
+        
+        st.divider()
+        
+        st.subheader("Run Directory Contents")
+        if st.session_state.jmeter_run_dir and os.path.exists(st.session_state.jmeter_run_dir):
+            try:
+                files = os.listdir(st.session_state.jmeter_run_dir)
+                if files:
+                    st.info(f"📂 Files in {st.session_state.jmeter_run_dir}:")
+                    for file in sorted(files, reverse=True)[:20]:  # Show last 20 files
+                        file_path = os.path.join(st.session_state.jmeter_run_dir, file)
+                        file_size = os.path.getsize(file_path) / 1024  # KB
+                        st.write(f"- **{file}** ({file_size:.2f} KB)")
+                else:
+                    st.info("📂 Directory is empty")
+            except Exception as e:
+                st.error(f"❌ Error listing files: {str(e)}")
+        else:
+            st.warning("⚠️ Run directory not configured")
         
         st.divider()
         
@@ -1781,11 +1962,13 @@ def main():
         
         st.subheader("About This Application")
         st.markdown("""
-        **AI-Powered JMeter Script Enhancer v3.0**
+        **AI-Powered JMeter Script Enhancer v4.0**
         
         Professional Streamlit dashboard for load testing script analysis.
         
-        **v3.0 Features:**
+        **v4.0 Features:**
+        - ✅ **Static JMeter Run Directory** for reliable output file creation
+        - ✅ **Directory Permission Verification** before running tests
         - ✅ CSV Dataset Config detection & path override
         - ✅ Multiple ThreadGroup handling
         - ✅ Property value extraction from JMeter properties
@@ -1797,6 +1980,7 @@ def main():
         - ✅ AI correlation analysis
         - ✅ AI enhancement recommendations
         - ✅ Improved timeout handling
+        - ✅ Detailed execution logging
         
         **Built with:**
         - 🐍 Python & Streamlit
