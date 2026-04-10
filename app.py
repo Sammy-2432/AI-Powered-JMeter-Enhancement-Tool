@@ -228,6 +228,10 @@ defaults = {
     "chat_history": [],
     "current_step": 1,
 }
+
+# ── Pre-create all required folders at startup ──
+for folder in ["C:/JMeter_Runs/scripts", "C:/JMeter_Runs/results"]:
+    Path(folder).mkdir(parents=True, exist_ok=True)
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -257,15 +261,16 @@ def parse_jmx(path: str):
 
 
 def build_jmeter_cmd(bin_path, jmx_path, output_jtl, tg_configs, csv_paths):
-    # Normalize bin path — strip quotes, trailing slashes, convert backslashes
     bin_path = bin_path.strip().strip('"').strip("'").rstrip("/\\")
     exe_name = "jmeter.bat" if os.name == "nt" else "jmeter"
     jmeter_exe = str(Path(bin_path) / exe_name)
+    # Normalise all paths to forward slashes to avoid Windows escape issues
+    jmx_path   = str(Path(jmx_path).resolve())
+    output_jtl = str(Path(output_jtl).resolve())
     cmd = [
         jmeter_exe, "-n",
         "-t", jmx_path,
         "-l", output_jtl,
-        "-e", "-o", output_jtl.replace(".jtl", "_report"),
     ]
     for tg, cfg in tg_configs.items():
         safe = tg.replace(" ", "_").replace("[", "").replace("]", "")
