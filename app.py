@@ -705,20 +705,41 @@ else:
                     unsafe_allow_html=True
                 )
 
+            # ── Block until JMeter fully exits ──
             process.wait()
-            prog.progress(100, text="Complete!")
             st.session_state.run_log = "\n".join(log_lines)
 
-            if process.returncode == 0:
-                st.success("✅ Dry run completed successfully!")
-                st.session_state.run_complete = True
-                st.session_state.current_step = max(st.session_state.current_step, 7)
-                df = parse_jtl(jtl_path)
-                st.session_state.results_df = df
-            else:
+            if process.returncode != 0:
+                prog.progress(100, text="Finished with errors.")
                 st.error(f"❌ JMeter exited with code {process.returncode}. Check the log above.")
                 st.session_state.run_complete = True
                 st.session_state.current_step = max(st.session_state.current_step, 7)
+            else:
+                # ── Poll until JTL file appears on disk (up to 30s) ──
+                prog.progress(92, text="Waiting for JMeter to flush results to disk...")
+                jtl_ready = False
+                for attempt in range(30):
+                    if os.path.isfile(jtl_path) and os.path.getsize(jtl_path) > 0:
+                        jtl_ready = True
+                        break
+                    time.sleep(1)
+                    prog.progress(92 + attempt % 5, text=f"Waiting for results file... ({attempt+1}s)")
+
+                prog.progress(100, text="Complete!")
+
+                if jtl_ready:
+                    st.success(f"✅ Dry run completed! Results saved to `{jtl_path}`")
+                    st.session_state.run_complete = True
+                    st.session_state.current_step = max(st.session_state.current_step, 7)
+                    df = parse_jtl(jtl_path)
+                    if df is not None and not df.empty:
+                        st.session_state.results_df = df
+                    else:
+                        st.warning("⚠️ JTL file was created but appears empty. The test may have had no samplers execute.")
+                else:
+                    st.error(f"❌ JMeter finished but no results file was found at `{jtl_path}` after 30 seconds. Check the log for errors.")
+                    st.session_state.run_complete = True
+                    st.session_state.current_step = max(st.session_state.current_step, 7)
 
         except FileNotFoundError:
             st.error("❌ JMeter executable not found. Please verify your bin path in Step 1.")
