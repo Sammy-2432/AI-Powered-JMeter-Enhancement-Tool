@@ -257,7 +257,10 @@ def parse_jmx(path: str):
 
 
 def build_jmeter_cmd(bin_path, jmx_path, output_jtl, tg_configs, csv_paths):
-    jmeter_exe = os.path.join(bin_path, "jmeter.bat" if os.name == "nt" else "jmeter")
+    # Normalize bin path — strip quotes, trailing slashes, convert backslashes
+    bin_path = bin_path.strip().strip('"').strip("'").rstrip("/\\")
+    exe_name = "jmeter.bat" if os.name == "nt" else "jmeter"
+    jmeter_exe = str(Path(bin_path) / exe_name)
     cmd = [
         jmeter_exe, "-n",
         "-t", jmx_path,
@@ -455,12 +458,13 @@ with st.container():
 
     if validate_btn and bin_input:
         st.session_state.jmeter_bin = bin_input
+        clean_bin = bin_input.strip().strip('"').strip("'").rstrip("/\\")
         exe = "jmeter.bat" if os.name == "nt" else "jmeter"
-        full_exe = os.path.join(bin_input, exe)
+        full_exe = str(Path(clean_bin) / exe)
         if os.path.isfile(full_exe):
             st.success(f"✅ JMeter found at `{full_exe}`")
             st.session_state.current_step = max(st.session_state.current_step, 2)
-        elif os.path.isdir(bin_input):
+        elif os.path.isdir(clean_bin):
             st.warning(f"⚠️ Directory exists but `{exe}` not found inside. Check your JMeter installation.")
         else:
             st.error("❌ Path does not exist. Please verify the bin folder path.")
@@ -488,8 +492,8 @@ with st.container():
         help="Upload the JMeter test plan file (.jmx)"
     )
     if uploaded:
-        save_dir = Path("jmeter_uploads")
-        save_dir.mkdir(exist_ok=True)
+        save_dir = Path("C:/JMeter_Runs/scripts")
+        save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / uploaded.name
         with open(save_path, "wb") as f:
             f.write(uploaded.getbuffer())
@@ -662,7 +666,9 @@ else:
         """, unsafe_allow_html=True)
 
     if run_btn:
-        jtl_path = f"jmeter_uploads/results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jtl"
+        results_dir = Path("C:/JMeter_Runs/results")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        jtl_path = str(results_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jtl")
         cmd = build_jmeter_cmd(
             st.session_state.jmeter_bin,
             st.session_state.jmx_path,
