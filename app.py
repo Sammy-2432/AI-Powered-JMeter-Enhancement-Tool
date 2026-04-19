@@ -866,27 +866,42 @@ st.markdown("<div class='neon-divider'></div>", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════
-#  STEP 8 — CLAUDE AI INSIGHTS
+# ═══════════════════════════════════════════════
+#  STEP 8 — LLM AI INSIGHTS (Multi-Provider)
 # ═══════════════════════════════════════════════
 st.markdown("""
 <div class='step-header'>
     <span class='step-badge'>STEP 8</span>
-    <span class='step-title'>🤖 Claude AI Insights</span>
+    <span class='step-title'>🤖 AI Insights</span>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 
-api_col, _ = st.columns([2, 1])
-with api_col:
+# Provider selection & API key input
+col1, col2 = st.columns(2)
+with col1:
+    provider = st.selectbox(
+        "🔗 AI Provider",
+        ["Anthropic", "OpenAI", "Google Gemini"],
+        index=0,
+        help="Select your LLM provider"
+    )
+with col2:
     api_key = st.text_input(
-        "🔑 Anthropic API Key",
+        "🔑 API Key",
         value=st.session_state.anthropic_key,
         type="password",
-        placeholder="sk-ant-...",
-        help="Your personal Anthropic API key. Never stored."
+        placeholder="sk-ant-... or sk-... or AIza...",
+        help="Your API key. Never stored."
     )
-    st.session_state.anthropic_key = api_key
+    st.session_state.anthropic_key = api_key  # Reuse state var
+
+provider_map = {
+    "Anthropic": "anthropic",
+    "OpenAI": "openai",
+    "Google Gemini": "gemini",
+}
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -916,11 +931,9 @@ You have access to the following test context from the user's current run:
 Provide concise, actionable, expert-level insights. Use bullet points where helpful.
 Format responses in Markdown. Be specific and reference the actual data when available."""
 
-    # Chat history display
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
     if not st.session_state.chat_history:
-        # Quick action chips
         st.markdown("<p style='color:#64748b; font-size:0.85rem;'>💬 Start a conversation or use a quick prompt:</p>", unsafe_allow_html=True)
         q_cols = st.columns(3)
         quick_prompts = [
@@ -932,16 +945,11 @@ Format responses in Markdown. Be specific and reference the actual data when ava
             with q_cols[i]:
                 if st.button(label, key=f"qp_{i}", use_container_width=True):
                     st.session_state.chat_history.append({"role": "user", "content": prompt})
-                    with st.spinner("Claude is thinking..."):
+                    with st.spinner(f"{provider} is thinking..."):
                         try:
-                            client = anthropic.Anthropic(api_key=st.session_state.anthropic_key)
-                            resp = client.messages.create(
-                                model="claude-sonnet-4-20250514",
-                                max_tokens=1024,
-                                system=SYSTEM_PROMPT,
-                                messages=st.session_state.chat_history,
-                            )
-                            reply = resp.content[0].text
+                            from llm_provider import get_llm_provider
+                            llm = get_llm_provider(provider_map[provider], st.session_state.anthropic_key)
+                            reply = llm.chat(SYSTEM_PROMPT, st.session_state.chat_history, 1024)
                             st.session_state.chat_history.append({"role": "assistant", "content": reply})
                             st.rerun()
                         except Exception as ex:
@@ -958,26 +966,19 @@ Format responses in Markdown. Be specific and reference the actual data when ava
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     inp_col, send_col = st.columns([5, 1])
     with inp_col:
-        user_msg = st.text_input("Ask Claude anything about your test...", key="chat_input", label_visibility="collapsed", placeholder="e.g. Why is my 95th percentile so high?")
+        user_msg = st.text_input("Ask the AI about your test...", key="chat_input", label_visibility="collapsed")
     with send_col:
         send_btn = st.button("Send ➤", key="send_chat", use_container_width=True)
 
     if send_btn and user_msg:
         st.session_state.chat_history.append({"role": "user", "content": user_msg})
-        with st.spinner("Claude is analyzing..."):
+        with st.spinner(f"{provider} is analyzing..."):
             try:
-                client = anthropic.Anthropic(api_key=st.session_state.anthropic_key)
-                resp = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1024,
-                    system=SYSTEM_PROMPT,
-                    messages=st.session_state.chat_history,
-                )
-                reply = resp.content[0].text
+                from llm_provider import get_llm_provider
+                llm = get_llm_provider(provider_map[provider], st.session_state.anthropic_key)
+                reply = llm.chat(SYSTEM_PROMPT, st.session_state.chat_history, 1024)
                 st.session_state.chat_history.append({"role": "assistant", "content": reply})
                 st.rerun()
-            except anthropic.AuthenticationError:
-                st.error("❌ Invalid API key. Please check your Anthropic API key.")
             except Exception as ex:
                 st.error(f"❌ API Error: {ex}")
 
@@ -990,8 +991,13 @@ else:
     st.markdown("""
     <div class='card' style='text-align:center; padding:30px;'>
         <div style='font-size:2rem; margin-bottom:10px;'>🤖</div>
-        <p style='color:#64748b;'>Enter your Anthropic API key above to unlock AI-powered insights, error analysis, and recommendations powered by Claude.</p>
-        <a href='https://console.anthropic.com' target='_blank' style='color:#00d4ff; font-size:0.85rem;'>Get your API key at console.anthropic.com →</a>
+        <p style='color:#64748b;'>Enter your API key above to unlock AI-powered insights powered by your chosen provider.</p>
+        <div style='font-size:0.8rem; color:#475569; margin-top:12px;'>
+            📚 Get API keys from:
+            <a href='https://console.anthropic.com' target='_blank' style='color:#00d4ff;'>Anthropic</a> · 
+            <a href='https://platform.openai.com' target='_blank' style='color:#00d4ff;'>OpenAI</a> · 
+            <a href='https://ai.google.dev' target='_blank' style='color:#00d4ff;'>Google AI</a>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
