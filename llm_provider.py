@@ -52,22 +52,23 @@ class OpenAIProvider(LLMProvider):
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(
-            "gemini-1.5-pro",
-            system_instruction=None  # Will be set per request
-        )
     
     def chat(self, system_prompt: str, messages: list, max_tokens: int) -> str:
+        # Create model with system_instruction set during initialization
+        model = genai.GenerativeModel(
+            "gemini-1.5-pro",
+            system_instruction=system_prompt
+        )
+        
         # Convert OpenAI format to Gemini format
         gemini_messages = []
         for msg in messages:
             role = "user" if msg["role"] == "user" else "model"
             gemini_messages.append({"role": role, "parts": [msg["content"]]})
         
-        resp = self.model.generate_content(
+        resp = model.generate_content(
             gemini_messages,
-            generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens),
-            system_instruction=system_prompt
+            generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens)
         )
         return resp.text
 
