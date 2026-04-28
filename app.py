@@ -293,14 +293,14 @@ STATUS_RECS = {
         "icon": "🔴",
         "cls": "rec-500",
         "causes": ["Server-side crash or unhandled exception", "Correlation issue — dynamic token/ID not captured correctly", "Request body malformed due to missing extracted variable"],
-        "fixes": ["Check JMeter's Response Body for stack trace clues", "Add a Regex/JSON Extractor for dynamic values (session IDs, tokens, order IDs)", "Enable 'Save Response Data' on the failing sampler to inspect the payload", "Verify your CSV data doesn't contain null/empty values for required fields"],
+        "fixes": ["Check JMeter's Response Body for stack trace clues", "Add a Regex/JSON Extractor for dynamic values (session IDs, tokens, order IDs)", "Enable 'Save Response Data' on the failing sampler"],
     },
     "403": {
         "title": "403 — Forbidden / Token Issue",
         "icon": "🟠",
         "cls": "rec-403",
         "causes": ["Auth token expired or not extracted properly", "Missing or incorrect Authorization header", "CSRF token mismatch"],
-        "fixes": ["Add a Login sampler before the failing request and extract the Bearer token using JSON Extractor", "Use a HTTP Header Manager with `Authorization: Bearer ${token}`", "Extract CSRF token from the login response and pass it in subsequent requests", "Check token expiry — add a think time or re-authenticate periodically"],
+        "fixes": ["Add a Login sampler before the failing request and extract the Bearer token using JSON Extractor", "Use a HTTP Header Manager with `Authorization: Bearer ${token}`", "Extract CSRF token if required"],
     },
     "401": {
         "title": "401 — Unauthorized",
@@ -321,7 +321,7 @@ STATUS_RECS = {
         "icon": "🟤",
         "cls": "rec-429",
         "causes": ["Rate limiting triggered by the server", "Too many threads hitting the endpoint simultaneously"],
-        "fixes": ["Add a Constant Throughput Timer to limit TPS", "Use a Gaussian Random Timer between requests", "Reduce thread count or increase ramp-up duration", "Coordinate with the server team to whitelist the load test IP"],
+        "fixes": ["Add a Constant Throughput Timer to limit TPS", "Use a Gaussian Random Timer between requests", "Reduce thread count or increase ramp-up duration", "Coordinate with the server team"],
     },
 }
 
@@ -348,20 +348,29 @@ def summarise_results(df):
         return {}
     total = len(df)
     errors = df[df["success"] == False] if "success" in df.columns else pd.DataFrame()
-    avg_rt = df["elapsed"].mean() if "elapsed" in df.columns else 0
-    max_rt = df["elapsed"].max() if "elapsed" in df.columns else 0
-    min_rt = df["elapsed"].min() if "elapsed" in df.columns else 0
-    err_rate = (len(errors) / total * 100) if total > 0 else 0
-    throughput = total / (df["elapsed"].sum() / 1000) if "elapsed" in df.columns and df["elapsed"].sum() > 0 else 0
-    status_counts = df["responseCode"].value_counts().to_dict() if "responseCode" in df.columns else {}
+    
+    # Convert numpy types to Python native types
+    avg_rt = float(df["elapsed"].mean()) if "elapsed" in df.columns else 0.0
+    max_rt = float(df["elapsed"].max()) if "elapsed" in df.columns else 0.0
+    min_rt = float(df["elapsed"].min()) if "elapsed" in df.columns else 0.0
+    
+    err_rate = float(len(errors) / total * 100) if total > 0 else 0.0
+    throughput = float(total / (df["elapsed"].sum() / 1000)) if "elapsed" in df.columns and df["elapsed"].sum() > 0 else 0.0
+    
+    # Convert status_counts to use string keys and int values
+    if "responseCode" in df.columns:
+        status_counts = {str(k): int(v) for k, v in df["responseCode"].value_counts().to_dict().items()}
+    else:
+        status_counts = {}
+    
     return {
-        "total": total,
-        "errors": len(errors),
-        "err_rate": round(err_rate, 2),
-        "avg_rt": round(avg_rt, 2),
-        "max_rt": round(max_rt, 2),
-        "min_rt": round(min_rt, 2),
-        "throughput": round(throughput, 2),
+        "total": int(total),
+        "errors": int(len(errors)),
+        "err_rate": round(float(err_rate), 2),
+        "avg_rt": round(float(avg_rt), 2),
+        "max_rt": round(float(max_rt), 2),
+        "min_rt": round(float(min_rt), 2),
+        "throughput": round(float(throughput), 2),
         "status_counts": status_counts,
     }
 
