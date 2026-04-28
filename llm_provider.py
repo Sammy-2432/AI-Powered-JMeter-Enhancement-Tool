@@ -35,14 +35,16 @@ class AnthropicProvider(LLMProvider):
 class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str):
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-4-turbo"  # or "gpt-4", "gpt-3.5-turbo"
+        self.model = "gpt-4o-mini"  # Use gpt-4o or gpt-4o-mini for latest models
     
     def chat(self, system_prompt: str, messages: list, max_tokens: int) -> str:
+        # OpenAI requires system prompt as first message with role="system"
+        api_messages = [{"role": "system", "content": system_prompt}] + messages
+        
         resp = self.client.chat.completions.create(
             model=self.model,
             max_tokens=max_tokens,
-            system=system_prompt,
-            messages=messages,
+            messages=api_messages,
         )
         return resp.choices[0].message.content
 
@@ -50,7 +52,10 @@ class OpenAIProvider(LLMProvider):
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-pro")
+        self.model = genai.GenerativeModel(
+            "gemini-1.5-pro",
+            system_instruction=None  # Will be set per request
+        )
     
     def chat(self, system_prompt: str, messages: list, max_tokens: int) -> str:
         # Convert OpenAI format to Gemini format
@@ -61,7 +66,8 @@ class GeminiProvider(LLMProvider):
         
         resp = self.model.generate_content(
             gemini_messages,
-            generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens)
+            generation_config=genai.types.GenerationConfig(max_output_tokens=max_tokens),
+            system_instruction=system_prompt
         )
         return resp.text
 
